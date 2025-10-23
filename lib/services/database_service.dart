@@ -295,26 +295,108 @@ class DatabaseService {
     }
   }
 
+  /**
+   * 根据日期查询消息
+   * TODO  重构数据库表的查询
+   */
+  Future<List<Message>> getMessagesByDate(String sessionId, int begintimestamp, int endtimestamp) async {
+    if (_sessionDb == null) {
+      throw Exception('数据库未连接');
+    }
+
+    try {
+      // 先尝试当前数据库
+      final Database dbForMsg = await _getDbForMessages();
+      final tableName = await _getMessageTableName(sessionId, dbForMsg);
+
+      if (tableName != null) {
+        // 找到了，直接查询
+        return await _queryMessagesFromTable(dbForMsg, tableName, 0, 0,begintimestamp: begintimestamp,endTimestamp: endtimestamp);
+      }
+
+      final allMessageDbs = await _findAllMessageDbs();
+
+      for (int i = 0; i < allMessageDbs.length; i++) {
+        final dbPath = allMessageDbs[i];
+
+        try {
+          final tempDb = await _currentFactory.openDatabase(
+            dbPath,
+            options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+          );
+
+          try {
+            final foundTableName = await _getMessageTableName(sessionId, tempDb, dbIndex: i);
+            if (foundTableName != null) {
+              final messages = await _queryMessagesFromTable(tempDb, foundTableName, 0, 0,begintimestamp: endtimestamp);
+              await tempDb.close();
+              return messages;
+            }
+          } finally {
+            await tempDb.close();
+          }
+        } catch (e) {
+        }
+      }
+
+      // 所有数据库都找不到
+      return [];
+    } catch (e) {
+      print('获取消息列表失败: $e');
+      throw Exception('获取消息列表失败: $e');
+    }
+  }
+
   /// 从指定表查询消息
   Future<List<Message>> _queryMessagesFromTable(
     Database db, 
-    String tableName, 
-    int limit, 
-    int offset
+    String tableName,
+    int limit,
+    int offset,
+    {int begintimestamp=0, int endTimestamp=0,}
   ) async {
       // 直接根据 real_sender_id 判断：1=自己发的，其他=别人发的
       // 对于群聊，需要通过 real_sender_id 查询 Name2Id 获取发送者 username
-    final maps = await db.rawQuery('''
-        SELECT 
-          m.*,
-          CASE WHEN m.real_sender_id = 1 THEN 1 ELSE 0 END AS is_send,
-          n.user_name AS sender_username
-        FROM $tableName m
-        LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid
-        ORDER BY m.sort_seq DESC 
-        LIMIT ? OFFSET ?
-      ''', [limit, offset]);
-      
+
+    // 构建基本 SQL
+     final buffer = StringBuffer('''
+      SELECT 
+      m.*,
+      CASE WHEN m.real_sender_id = 1 THEN 1 ELSE 0 END AS is_send,
+      n.user_name AS sender_username
+      FROM $tableName m 
+      LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid
+      ''');
+
+      // 构建 where 条件
+      final whereClauses = <String>[];
+      final args = <Object?>[];
+      if (begintimestamp > 0) {
+        whereClauses.add('m.create_time >= ?');
+        args.add(begintimestamp);
+      }
+      if (endTimestamp > 0) {
+        whereClauses.add('m.create_time <= ?');
+        args.add(endTimestamp);
+      }
+      // 拼接 where
+      if (whereClauses.isNotEmpty) {
+        buffer.write(' WHERE ${whereClauses.join(' AND ')}');
+      }
+
+
+      //拼接排序
+      buffer.write(' ORDER BY m.sort_seq DESC ');
+
+      // 分页
+      if(limit>0 || offset>0) {
+        buffer.write(' LIMIT ? OFFSET ?');
+        args.addAll([limit, offset]);
+      }
+
+      //执行查询
+      final maps = await db.rawQuery(buffer.toString(), args);
+
       return maps.map((map) => Message.fromMap(map, myWxid: _currentAccountWxid)).toList();
   }
 
