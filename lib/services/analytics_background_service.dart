@@ -220,6 +220,7 @@ class AnalyticsBackgroundService {
     required AnalyticsProgressCallback progressCallback,
   }) async {
     try {
+      
       final receivePort = ReceivePort();
       final task = _AnalyticsTask(
         dbPath: dbPath,
@@ -254,6 +255,7 @@ class AnalyticsBackgroundService {
             receivePort.close();
             throw Exception(message.error);
           }
+        } else {
         }
       }
 
@@ -266,6 +268,7 @@ class AnalyticsBackgroundService {
   /// 后台 Isolate 分析入口函数
   static Future<void> _analyzeInIsolate(_AnalyticsTask task) async {
     try {
+      
       // 初始化 BackgroundIsolateBinaryMessenger（在 Isolate 中必须先初始化）
       BackgroundIsolateBinaryMessenger.ensureInitialized(task.rootIsolateToken);
       
@@ -288,6 +291,7 @@ class AnalyticsBackgroundService {
       // 在 Isolate 中创建数据库服务，显式使用 databaseFactoryFfi
       final dbService = DatabaseService();
       await dbService.initialize(factory: databaseFactoryFfi);
+      
       await dbService.connectDecryptedDatabase(task.dbPath, factory: databaseFactoryFfi);
 
       // 发送进度更新
@@ -767,6 +771,7 @@ class AnalyticsBackgroundService {
     int? filterYear,
     void Function(String taskName, String status, int progress) progressCallback,
   ) async {
+    
     final taskProgress = <String, int>{};
     final taskStatus = <String, String>{};
     
@@ -779,8 +784,6 @@ class AnalyticsBackgroundService {
       '主动社交指数',
       '聊天巅峰日',
       '连续打卡记录',
-      '消息类型分布',
-      '表达欲分析',
       '作息图谱',
       '深夜密友',
       '最快响应好友',
@@ -847,16 +850,6 @@ class AnalyticsBackgroundService {
       createProgressCallback('连续打卡记录'),
     );
     
-    final messageTypes = await analyzeMessageTypeDistributionInBackground(
-      filterYear,
-      createProgressCallback('消息类型分布'),
-    );
-    
-    final messageLength = await analyzeMessageLengthInBackground(
-      filterYear,
-      createProgressCallback('表达欲分析'),
-    );
-    
     final activityPattern = await analyzeActivityPatternInBackground(
       filterYear,
       createProgressCallback('作息图谱'),
@@ -888,8 +881,6 @@ class AnalyticsBackgroundService {
       'socialInitiative': socialInitiative.toJson(),
       'peakDay': peakDay.toJson(),
       'checkIn': checkIn,
-      'messageTypes': messageTypes.map((e) => e.toJson()).toList(),
-      'messageLength': messageLength.toJson(),
       'activityPattern': activityPattern.toJson(),
       'midnightKing': midnightKing,
       'whoRepliesFastest': whoRepliesFastest,

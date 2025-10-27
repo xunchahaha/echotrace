@@ -141,6 +141,14 @@ class _SidebarState extends State<Sidebar> with SingleTickerProviderStateMixin {
                       ),
                       
                       _SidebarButton(
+                        icon: Icons.file_download_outlined,
+                        label: '导出记录',
+                        showLabel: _showContent,
+                        isSelected: appState.currentPage == 'export',
+                        onTap: () => appState.setCurrentPage('export'),
+                      ),
+                      
+                      _SidebarButton(
                         icon: Icons.folder_outlined,
                         label: '数据管理',
                         showLabel: _showContent,

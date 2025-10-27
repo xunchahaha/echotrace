@@ -4,7 +4,7 @@ import '../services/analytics_service.dart';
 import '../services/database_service.dart';
 import '../services/analytics_cache_service.dart';
 import '../models/analytics_data.dart';
-import 'annual_report_page.dart';
+import 'annual_report_display_page.dart';
 
 /// 数据分析页面
 class AnalyticsPage extends StatefulWidget {
@@ -452,7 +452,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => AnnualReportPage(
+              builder: (context) => AnnualReportDisplayPage(
                 databaseService: widget.databaseService,
               ),
             ),

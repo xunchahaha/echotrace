@@ -9,7 +9,6 @@ import '../services/decrypt_service.dart';
 import '../services/image_decrypt_service.dart';
 import '../services/logger_service.dart';
 import '../services/go_decrypt_ffi.dart';
-import 'log_viewer_page.dart';
 
 /// 数据管理页面
 class DataManagementPage extends StatefulWidget {
@@ -128,21 +127,20 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
       await logger.info('DataManagementPage', '开始清理重命名的旧文件（.old.* 后缀）');
       int cleanedCount = 0;
       
-      // 扫描 EchoTrace 目录下所有的 wxid 文件夹
+      // 扫描 EchoTrace 目录下所有的账号文件夹
       final echoTraceDir = Directory('$documentsPath${Platform.pathSeparator}EchoTrace');
       if (!await echoTraceDir.exists()) {
         await logger.info('DataManagementPage', 'EchoTrace 目录不存在，跳过清理');
         return;
       }
       
-      await for (final wxidEntity in echoTraceDir.list()) {
-        if (wxidEntity is! Directory) continue;
+      await for (final accountEntity in echoTraceDir.list()) {
+        if (accountEntity is! Directory) continue;
         
-        final wxidDirName = wxidEntity.path.split(Platform.pathSeparator).last;
-        if (!wxidDirName.startsWith('wxid_')) continue;
+        final accountDirName = accountEntity.path.split(Platform.pathSeparator).last;
         
-        // 扫描该 wxid 目录下的所有 .old.* 文件
-        await for (final fileEntity in wxidEntity.list()) {
+        // 扫描该账号目录下的所有 .old.* 文件
+        await for (final fileEntity in accountEntity.list()) {
           if (fileEntity is! File) continue;
           
           final fileName = fileEntity.path.split(Platform.pathSeparator).last;
@@ -150,7 +148,7 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
             try {
               await fileEntity.delete();
               cleanedCount++;
-              await logger.info('DataManagementPage', '已删除旧文件: $fileName');
+              await logger.info('DataManagementPage', '已删除旧文件: $fileName (账号: $accountDirName)');
             } catch (e) {
               await logger.warning('DataManagementPage', '无法删除旧文件 $fileName: $e');
               // 如果文件仍被占用，下次启动时再试
@@ -170,6 +168,20 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
     }
   }
 
+  /// 清理账号目录名，去除微信自动添加的后缀
+  String _cleanAccountDirName(String dirName) {
+    // 如果是 wxid_ 开头，去除后面可能的 _数字 后缀
+    if (dirName.startsWith('wxid_')) {
+      // 匹配 wxid_ 开头，后面跟着字母数字但不包含下划线的部分
+      final match = RegExp(r'wxid_[a-zA-Z0-9]+').firstMatch(dirName);
+      if (match != null) {
+        return match.group(0)!;
+      }
+    }
+    // 非 wxid_ 格式的账号目录（新版微信），直接返回
+    return dirName;
+  }
+
   /// 智能扫描数据库路径
   Future<void> _scanDatabasePath(String basePath, String documentsPath) async {
     final baseDir = Directory(basePath);
@@ -183,50 +195,61 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
     // 判断路径类型并采取不同的扫描策略
     if (lastPart == 'db_storage') {
       // 情况1：用户直接选择了 db_storage 目录
-      // 从路径中提取 wxid
-      String? wxidName;
+      // 从路径中提取账号文件夹名
+      String accountName = 'unknown';
       if (pathParts.length >= 2) {
         final parentDirName = pathParts[pathParts.length - 2];
-        if (parentDirName.startsWith('wxid_')) {
-          wxidName = parentDirName;
-        }else{
-          wxidName="wxid_$parentDirName";
+        accountName = _cleanAccountDirName(parentDirName);
+      }
+      
+      await _scanDbStorageDirectory(baseDir, accountName, documentsPath);
+      
+    } else {
+      // 情况2和3：扫描该目录下所有包含 db_storage 子文件夹的子目录
+      // 这样可以兼容 wxid_xxx 格式和新版微信的其他命名格式
+      bool foundAnyAccount = false;
+      
+      await for (final entity in baseDir.list()) {
+        if (entity is! Directory) continue;
+        
+        final accountDirName = entity.path.split(Platform.pathSeparator).last;
+        final cleanedAccountName = _cleanAccountDirName(accountDirName);
+        final dbStoragePath = '${entity.path}${Platform.pathSeparator}db_storage';
+        final dbStorageDir = Directory(dbStoragePath);
+        
+        // 检查是否存在 db_storage 子文件夹
+        if (await dbStorageDir.exists()) {
+          foundAnyAccount = true;
+          await logger.info('DataManagementPage', '发现账号目录: $accountDirName -> 清理后: $cleanedAccountName (包含 db_storage)');
+          await _scanDbStorageDirectory(dbStorageDir, cleanedAccountName, documentsPath);
         }
       }
       
-      await _scanDbStorageDirectory(baseDir, wxidName ?? 'unknown', documentsPath);
-      
-    } else if (lastPart.startsWith('wxid_')) {
-      // 情况2：用户选择了 wxid_xxx 目录
-      final wxidName = lastPart;
-      final dbStoragePath = '$basePath${Platform.pathSeparator}db_storage';
-      final dbStorageDir = Directory(dbStoragePath);
-      
-      if (await dbStorageDir.exists()) {
-        await _scanDbStorageDirectory(dbStorageDir, wxidName, documentsPath);
-      }
-      
-    } else {
-      // 情况3：用户选择了上层目录（如 xwechat_files），扫描所有 wxid 目录
-      final wxidDirs = await baseDir.list().where((entity) {
-        return entity is Directory && 
-               entity.path.split(Platform.pathSeparator).last.startsWith('wxid_');
-      }).toList();
-
-      for (final wxidDir in wxidDirs) {
-        final wxidName = wxidDir.path.split(Platform.pathSeparator).last;
-        final dbStoragePath = '${wxidDir.path}${Platform.pathSeparator}db_storage';
-        final dbStorageDir = Directory(dbStoragePath);
-        
-        if (await dbStorageDir.exists()) {
-          await _scanDbStorageDirectory(dbStorageDir, wxidName, documentsPath);
+      // 如果没有找到任何账号目录，尝试使用手动输入的wxid
+      if (!foundAnyAccount) {
+        final manualWxid = await _configService.getManualWxid();
+        if (manualWxid != null && manualWxid.isNotEmpty) {
+          await logger.info('DataManagementPage', '未找到账号目录，使用手动输入的wxid: $manualWxid');
+          // 查找该wxid对应的db_storage目录
+          await for (final entity in baseDir.list()) {
+            if (entity is! Directory) continue;
+            
+            final dbStoragePath = '${entity.path}${Platform.pathSeparator}db_storage';
+            final dbStorageDir = Directory(dbStoragePath);
+            
+            if (await dbStorageDir.exists()) {
+              await logger.info('DataManagementPage', '使用手动wxid扫描数据库: $manualWxid');
+              await _scanDbStorageDirectory(dbStorageDir, manualWxid, documentsPath);
+              break;
+            }
+          }
         }
       }
     }
   }
 
   /// 扫描 db_storage 目录下的所有数据库文件
-  Future<void> _scanDbStorageDirectory(Directory dbStorageDir, String wxidName, String documentsPath) async {
+  Future<void> _scanDbStorageDirectory(Directory dbStorageDir, String accountName, String documentsPath) async {
     // 递归查找所有 .db 文件
     final dbFiles = await _findAllDbFiles(dbStorageDir);
     
@@ -241,7 +264,7 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
       // 检查是否已经解密
       final ourWorkDir = Directory('$documentsPath${Platform.pathSeparator}EchoTrace');
       final decryptedFileName = '${fileName.split('.').first}.db';
-      final decryptedFilePath = '${ourWorkDir.path}${Platform.pathSeparator}$wxidName${Platform.pathSeparator}$decryptedFileName';
+      final decryptedFilePath = '${ourWorkDir.path}${Platform.pathSeparator}$accountName${Platform.pathSeparator}$decryptedFileName';
       final decryptedFile = File(decryptedFilePath);
       
       final isDecrypted = await decryptedFile.exists();
@@ -257,7 +280,7 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
         originalPath: dbFile.path,
         fileName: fileName,
         fileSize: fileSize,
-        wxidName: wxidName,
+        wxidName: accountName,
         isDecrypted: isDecrypted,
         decryptedPath: decryptedFilePath,
         originalModified: originalModified,
@@ -1038,35 +1061,39 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
     // 判断路径类型并采取不同的扫描策略
     if (lastPart == 'db_storage') {
       // 情况1：用户选择了 db_storage 目录
-      // 需要回到父目录（wxid目录）来扫描图片
+      // 需要回到父目录（账号目录）来扫描图片
       if (pathParts.length >= 2) {
-        final wxidPath = pathParts.sublist(0, pathParts.length - 1).join(Platform.pathSeparator);
-        final wxidDir = Directory(wxidPath);
+        final accountPath = pathParts.sublist(0, pathParts.length - 1).join(Platform.pathSeparator);
+        final accountDir = Directory(accountPath);
         
-        await logger.info('DataManagementPage', '检测到db_storage路径，扫描wxid目录: $wxidPath');
+        await logger.info('DataManagementPage', '检测到db_storage路径，扫描账号目录: $accountPath');
         
-        if (await wxidDir.exists()) {
-          await _scanWxidImageDirectory(wxidDir, documentsPath);
+        if (await accountDir.exists()) {
+          await _scanWxidImageDirectory(accountDir, documentsPath);
         }
       }
-    } else if (lastPart.startsWith('wxid_')) {
-      // 情况2：用户选择了 wxid_xxx 目录
-      await logger.info('DataManagementPage', '检测到wxid目录，直接扫描: $basePath');
-      await _scanWxidImageDirectory(baseDir, documentsPath);
     } else {
-      // 情况3：用户选择了上层目录（如 xwechat_files），扫描所有 wxid 目录
-      await logger.info('DataManagementPage', '检测到上层目录，扫描所有wxid子目录');
+      // 情况2和3：扫描该目录下所有包含图片的账号目录
+      // 通过检查是否有 db_storage 子文件夹来识别账号目录
+      await logger.info('DataManagementPage', '扫描目录下的所有账号子目录');
       
       final entities = await baseDir.list().toList();
-      final wxidDirs = entities.where((entity) {
-        return entity is Directory && 
-               entity.path.split(Platform.pathSeparator).last.startsWith('wxid_');
-      }).toList();
+      final accountDirs = <Directory>[];
+      
+      for (final entity in entities) {
+        if (entity is! Directory) continue;
+        
+        // 检查是否有 db_storage 子文件夹（标志账号目录）
+        final dbStoragePath = '${entity.path}${Platform.pathSeparator}db_storage';
+        if (await Directory(dbStoragePath).exists()) {
+          accountDirs.add(entity);
+        }
+      }
 
-      await logger.info('DataManagementPage', '找到 ${wxidDirs.length} 个wxid目录');
+      await logger.info('DataManagementPage', '找到 ${accountDirs.length} 个账号目录');
 
-      for (final wxidDir in wxidDirs) {
-        await _scanWxidImageDirectory(wxidDir as Directory, documentsPath);
+      for (final accountDir in accountDirs) {
+        await _scanWxidImageDirectory(accountDir, documentsPath);
       }
     }
   }
@@ -1453,22 +1480,6 @@ class _DataManagementPageState extends State<DataManagementPage> with SingleTick
           ),
           child: Row(
             children: [
-              // 查看日志按钮
-              OutlinedButton.icon(
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) => const LogViewerPage(),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.article_outlined),
-                label: const Text('查看日志'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.grey.shade700,
-                  side: BorderSide(color: Colors.grey.shade300),
-                ),
-              ),
               const Spacer(),
               // 增量更新按钮
               if (_databaseFiles.any((file) => file.needsUpdate))

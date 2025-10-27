@@ -288,34 +288,33 @@ class AppState extends ChangeNotifier {
       final documentsDir = await getApplicationDocumentsDirectory();
       final documentsPath = documentsDir.path;
       
-      // 查找所有 wxid 目录
+      // 查找所有账号目录（不限制必须以 wxid_ 开头）
       final echoTraceDir = Directory('$documentsPath${Platform.pathSeparator}EchoTrace');
       if (!await echoTraceDir.exists()) {
         await logger.error('AppState', 'EchoTrace目录不存在: ${echoTraceDir.path}');
         throw Exception('EchoTrace目录不存在，请先解密数据库');
       }
       
-      final wxidDirs = await echoTraceDir.list().where((entity) {
-        return entity is Directory && 
-               entity.path.split(Platform.pathSeparator).last.startsWith('wxid_');
+      final accountDirs = await echoTraceDir.list().where((entity) {
+        return entity is Directory;
       }).toList();
       
-      if (wxidDirs.isEmpty) {
-        await logger.error('AppState', '未找到任何wxid目录');
-        throw Exception('未找到任何wxid目录，请先解密数据库');
+      if (accountDirs.isEmpty) {
+        await logger.error('AppState', '未找到任何账号目录');
+        throw Exception('未找到任何账号目录，请先解密数据库');
       }
       
-      await logger.info('AppState', '找到 ${wxidDirs.length} 个wxid目录');
+      await logger.info('AppState', '找到 ${accountDirs.length} 个账号目录');
       
       final List<String> attemptedFiles = [];
       final List<String> errors = [];
       
-      // 遍历每个 wxid 目录，查找所有已解密的数据库
-      for (final wxidEntity in wxidDirs) {
-        final wxidDir = wxidEntity as Directory;
+      // 遍历每个账号目录，查找所有已解密的数据库
+      for (final accountEntity in accountDirs) {
+        final accountDir = accountEntity as Directory;
         
         // 获取目录下所有 .db 文件
-        final dbFiles = await wxidDir.list().where((entity) {
+        final dbFiles = await accountDir.list().where((entity) {
           return entity is File &&
                  entity.path.endsWith('.db');
         }).toList();

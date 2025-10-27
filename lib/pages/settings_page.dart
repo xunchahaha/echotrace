@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
-import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../providers/app_state.dart';
 import '../services/config_service.dart';
@@ -23,6 +22,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final _formKey = GlobalKey<FormState>();
   final _keyController = TextEditingController();
   final _pathController = TextEditingController();
+  final _wxidController = TextEditingController();
   final _imageXorKeyController = TextEditingController();
   final _imageAesKeyController = TextEditingController();
   final _configService = ConfigService();
@@ -35,6 +35,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String? _statusMessage;
   bool _isSuccess = false;
   String _databaseMode = 'backup'; // 'backup' 或 'realtime'
+  bool _showWxidInput = false; // 是否显示手动输入wxid的输入框
 
   @override
   void initState() {
@@ -48,6 +49,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     _keyController.dispose();
     _pathController.dispose();
+    _wxidController.dispose();
     _imageXorKeyController.dispose();
     _imageAesKeyController.dispose();
     _decryptService.dispose();
@@ -60,6 +62,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final mode = await _configService.getDatabaseMode();
     final imageXorKey = await _configService.getImageXorKey();
     final imageAesKey = await _configService.getImageAesKey();
+    final manualWxid = await _configService.getManualWxid();
 
     if (mounted) {
       setState(() {
@@ -68,6 +71,51 @@ class _SettingsPageState extends State<SettingsPage> {
         _databaseMode = mode;
         _imageXorKeyController.text = imageXorKey ?? '';
         _imageAesKeyController.text = imageAesKey ?? '';
+        _wxidController.text = manualWxid ?? '';
+        // 如果已经有手动输入的wxid，显示输入框
+        _showWxidInput = (manualWxid != null && manualWxid.isNotEmpty);
+      });
+      
+      // 如果有路径，检查是否存在账号目录
+      if (path != null && path.isNotEmpty) {
+        _checkAccountDirectory(path);
+      }
+    }
+  }
+
+  /// 检查目录中是否存在账号目录（包含 db_storage 子文件夹）
+  Future<void> _checkAccountDirectory(String path) async {
+    try {
+      final dir = Directory(path);
+      if (!await dir.exists()) {
+        setState(() {
+          _showWxidInput = true;
+        });
+        return;
+      }
+
+      // 检查是否存在包含 db_storage 的子目录
+      bool foundAccountDir = false;
+      await for (final entity in dir.list()) {
+        if (entity is Directory) {
+          final dbStoragePath = '${entity.path}${Platform.pathSeparator}db_storage';
+          if (await Directory(dbStoragePath).exists()) {
+            foundAccountDir = true;
+            break;
+          }
+        }
+      }
+
+      setState(() {
+        _showWxidInput = !foundAccountDir;
+      });
+      
+      if (!foundAccountDir) {
+        _showMessage('未在该目录中找到账号目录，请手动输入wxid', false);
+      }
+    } catch (e) {
+      setState(() {
+        _showWxidInput = true;
       });
     }
   }
@@ -75,13 +123,14 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _selectDatabasePath() async {
     try {
       String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: '选择微信数据库根目录 (db_storage)',
+        dialogTitle: '选择微信数据库根目录 (通常是 xwechat_files)',
       );
 
       if (selectedDirectory != null) {
         setState(() {
           _pathController.text = selectedDirectory;
         });
+        await _checkAccountDirectory(selectedDirectory);
         _showMessage('已选择数据库根目录', true);
       }
     } catch (e) {
@@ -89,71 +138,61 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// 自动检测数据库路径
+  /// 自动检测数据库目录
   Future<void> _autoDetectDatabasePath() async {
     try {
-      setState(() {
-        _isLoading = true;
-      });
+      _showMessage('正在自动检测数据库目录...', true);
+      
+      // 获取用户主目录
+      final homeDir = Platform.environment['USERPROFILE'] ?? 
+                      Platform.environment['HOME'] ?? 
+                      '';
+      
+      if (homeDir.isEmpty) {
+        _showMessage('无法获取用户主目录', false);
+        return;
+      }
 
-
-      // 获取文档目录
-      final documentsDir = await getApplicationDocumentsDirectory();
-      final documentsPath = documentsDir.path;
-
-
-      // 常见的微信数据库路径模式
+      // 微信数据库路径
       final possiblePaths = [
-        '$documentsPath${Platform.pathSeparator}xwechat_files'
+        '$homeDir${Platform.pathSeparator}Documents${Platform.pathSeparator}xwechat_files',
       ];
 
-      String? foundDbStoragePath;
-
-      for (final basePath in possiblePaths) {
-        
-        final baseDir = Directory(basePath);
-        if (await baseDir.exists()) {
-          
-          // 查找所有 wxid_xxx 目录
-          final wxidDirs = await baseDir.list().where((entity) {
-            return entity is Directory && 
-                   entity.path.split(Platform.pathSeparator).last.startsWith('wxid_');
-          }).toList();
-
-
-          for (final wxidDir in wxidDirs) {
-            final dbStoragePath = '${wxidDir.path}${Platform.pathSeparator}db_storage';
-            final dbStorageDir = Directory(dbStoragePath);
-            
-            if (await dbStorageDir.exists()) {
-              foundDbStoragePath = dbStoragePath;
+      for (final path in possiblePaths) {
+        final dir = Directory(path);
+        if (await dir.exists()) {
+          // 检查是否包含账号目录（包含 db_storage 子文件夹）
+          await for (final entity in dir.list()) {
+            if (entity is Directory) {
+              final dbStoragePath = '${entity.path}${Platform.pathSeparator}db_storage';
+              final dbStorageDir = Directory(dbStoragePath);
               
-              break;
+              if (await dbStorageDir.exists()) {
+                // 找到了包含 db_storage 的目录
+                setState(() {
+                  _pathController.text = path;
+                });
+                await _checkAccountDirectory(path);
+                _showMessage('自动检测成功：$path', true);
+                return;
+              }
             }
           }
         }
-        
-        if (foundDbStoragePath != null) break;
       }
 
-      if (foundDbStoragePath != null) {
-        setState(() {
-          _pathController.text = foundDbStoragePath!;
-        });
-        _showMessage('自动检测到微信数据库根目录: db_storage', true);
-      } else {
-        _showMessage('未找到微信数据库目录，请手动选择', false);
-      }
+      setState(() {
+        _showWxidInput = true;
+      });
+      _showMessage('未能自动检测到微信数据库目录，请手动选择或输入wxid', false);
     } catch (e) {
+      setState(() {
+        _showWxidInput = true;
+      });
       _showMessage('自动检测失败: $e', false);
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
     }
   }
+
 
   /// 递归查找所有 .db 文件
   Future<List<File>> _findAllDbFiles(Directory dir) async {
@@ -186,24 +225,41 @@ class _SettingsPageState extends State<SettingsPage> {
       final key = _keyController.text.trim();
       final path = _pathController.text.trim();
 
-
-      // 查找一个小的数据库文件进行测试
-      final dbStorageDir = Directory(path);
-      if (!await dbStorageDir.exists()) {
-        _showMessage('数据库目录不存在', false);
+      // 检查根目录是否存在
+      final rootDir = Directory(path);
+      if (!await rootDir.exists()) {
+        _showMessage('数据库目录不存在: $path', false);
         return;
       }
 
+      // 在根目录下查找包含 db_storage 的账号目录
+      Directory? dbStorageDir;
+      await for (final entity in rootDir.list()) {
+        if (entity is Directory) {
+          final possibleDbStorage = Directory('${entity.path}${Platform.pathSeparator}db_storage');
+          if (await possibleDbStorage.exists()) {
+            dbStorageDir = possibleDbStorage;
+            break;
+          }
+        }
+      }
+
+      if (dbStorageDir == null) {
+        _showMessage('未找到 db_storage 目录\n请确认选择了正确的微信数据库根目录（如 xwechat_files）', false);
+        return;
+      }
+
+      // 在 db_storage 目录中查找 .db 文件
       final dbFiles = await _findAllDbFiles(dbStorageDir);
+      
       if (dbFiles.isEmpty) {
-        _showMessage('数据库目录中没有找到.db文件', false);
+        _showMessage('db_storage 目录中没有找到.db文件', false);
         return;
       }
 
       // 选择最小的文件进行测试
       dbFiles.sort((a, b) => a.lengthSync().compareTo(b.lengthSync()));
       final testFile = dbFiles.first;
-
 
       // 验证密钥
       final isValid = await _decryptService.validateKey(testFile.path, key);
@@ -237,6 +293,7 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       final key = _keyController.text.trim();
       final path = _pathController.text.trim();
+      final wxid = _wxidController.text.trim();
       final imageXorKey = _imageXorKeyController.text.trim();
       final imageAesKey = _imageAesKeyController.text.trim();
 
@@ -244,6 +301,11 @@ class _SettingsPageState extends State<SettingsPage> {
       await _configService.saveDecryptKey(key);
       await _configService.saveDatabasePath(path);
       await _configService.saveDatabaseMode(_databaseMode);
+      
+      // 保存手动输入的wxid（如果有）
+      if (wxid.isNotEmpty) {
+        await _configService.saveManualWxid(wxid);
+      }
       
       // 保存图片解密密钥（可选）
       if (imageXorKey.isNotEmpty) {
@@ -329,16 +391,6 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             child: Row(
               children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back_ios),
-                  onPressed: () {
-                    context.read<AppState>().setCurrentPage('chat');
-                  },
-                  style: IconButton.styleFrom(
-                    foregroundColor: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                  ),
-                ),
-                const SizedBox(width: 16),
                 Text(
                   '设置',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
@@ -347,21 +399,21 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const Spacer(),
                 // 测试连接按钮
-                OutlinedButton.icon(
+                OutlinedButton(
                   onPressed: _isLoading ? null : _testConnection,
-                  label: const Text('测试连接'),
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   ),
+                  child: const Text('测试连接'),
                 ),
                 const SizedBox(width: 12),
                 // 保存按钮
-                ElevatedButton.icon(
+                ElevatedButton(
                   onPressed: _isLoading ? null : _saveConfig,
-                  label: const Text('保存配置'),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                   ),
+                  child: const Text('保存配置'),
                 ),
               ],
             ),
@@ -421,18 +473,6 @@ class _SettingsPageState extends State<SettingsPage> {
             // 标题区域
             Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.storage,
-                    color: Theme.of(context).colorScheme.primary,
-                    size: 24,
-                  ),
-                ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
@@ -480,14 +520,6 @@ class _SettingsPageState extends State<SettingsPage> {
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(color: Theme.of(context).colorScheme.primary, width: 2.0),
                   ),
-                  suffixIcon: IconButton(
-                    icon: Icon(_obscureKey ? Icons.visibility : Icons.visibility_off),
-                    onPressed: () {
-                      setState(() {
-                        _obscureKey = !_obscureKey;
-                      });
-                    },
-                  ),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -509,53 +541,99 @@ class _SettingsPageState extends State<SettingsPage> {
             _buildInputSection(
               context,
               title: '数据库根目录',
-              subtitle: '自动检测或手动选择db_storage目录',
-              child: Row(
+              subtitle: '自动检测或手动选择xwechat_files目录',
+              child: Column(
                 children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _pathController,
-                      decoration: InputDecoration(
-                        hintText: '点击自动检测或手动选择db_storage目录',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Theme.of(context).colorScheme.primary, width: 2.0),
-                        ),
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.search),
+                  TextFormField(
+                    controller: _pathController,
+                    decoration: InputDecoration(
+                      hintText: '点击自动检测或手动选择xwechat_files目录',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Theme.of(context).colorScheme.primary, width: 2.0),
+                      ),
+                    ),
+                    readOnly: true,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return '请选择数据库根目录';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
                           onPressed: _autoDetectDatabasePath,
-                          tooltip: '自动检测',
+                          icon: const Icon(Icons.search),
+                          label: const Text('自动检测'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          ),
                         ),
                       ),
-                      readOnly: true,
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return '请选择数据库根目录';
-                        }
-                        return null;
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed: _selectDatabasePath,
-                    icon: const Icon(Icons.folder_open),
-                    label: const Text('浏览'),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _selectDatabasePath,
+                          icon: const Icon(Icons.folder_open),
+                          label: const Text('手动选择'),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
+            
+            // 手动输入wxid区域（条件显示）
+            if (_showWxidInput) ...[
+              const SizedBox(height: 24),
+              _buildInputSection(
+                context,
+                title: '账号wxid',
+                subtitle: '未找到账号目录，请手动输入wxid（如：wxid_abc123）',
+                child: TextFormField(
+                  controller: _wxidController,
+                  decoration: InputDecoration(
+                    hintText: '请输入微信账号wxid',
+                    prefixIcon: const Icon(Icons.person_outline),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey.shade300, width: 1.5),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Theme.of(context).colorScheme.primary, width: 2.0),
+                    ),
+                  ),
+                  validator: (value) {
+                    if (_showWxidInput && (value == null || value.isEmpty)) {
+                      return '请输入wxid';
+                    }
+                    return null;
+                  },
+                ),
+              ),
+            ],
+            
             const SizedBox(height: 32),
 
             // 状态消息
@@ -575,11 +653,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      _isSuccess ? Icons.check_circle : Icons.error,
-                      color: _isSuccess ? Colors.green : Colors.red,
-                    ),
-                    const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         _statusMessage!,
@@ -644,18 +717,6 @@ class _SettingsPageState extends State<SettingsPage> {
             // 标题区域
             Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.image,
-                    color: Theme.of(context).colorScheme.primary,
-                    size: 24,
-                  ),
-                ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
@@ -703,14 +764,6 @@ class _SettingsPageState extends State<SettingsPage> {
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(color: Theme.of(context).colorScheme.primary, width: 2.0),
                   ),
-                  suffixIcon: IconButton(
-                    icon: Icon(_obscureImageXorKey ? Icons.visibility : Icons.visibility_off),
-                    onPressed: () {
-                      setState(() {
-                        _obscureImageXorKey = !_obscureImageXorKey;
-                      });
-                    },
-                  ),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -750,14 +803,6 @@ class _SettingsPageState extends State<SettingsPage> {
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(color: Theme.of(context).colorScheme.primary, width: 2.0),
                   ),
-                  suffixIcon: IconButton(
-                    icon: Icon(_obscureImageAesKey ? Icons.visibility : Icons.visibility_off),
-                    onPressed: () {
-                      setState(() {
-                        _obscureImageAesKey = !_obscureImageAesKey;
-                      });
-                    },
-                  ),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -786,12 +831,6 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    Icons.info_outline,
-                    size: 16,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                  ),
-                  const SizedBox(width: 8),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -824,7 +863,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildDatabaseModeCard(BuildContext context) {
-    const wechatGreen = Color(0xFF07C160);
     
     return Card(
       elevation: 0,
@@ -841,18 +879,6 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.swap_horiz,
-                    color: Colors.blue,
-                    size: 24,
-                  ),
-                ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
@@ -883,8 +909,6 @@ class _SettingsPageState extends State<SettingsPage> {
               context,
               title: '备份模式',
               subtitle: '读取已解密的数据库副本（推荐）',
-              icon: Icons.backup,
-              iconColor: wechatGreen,
               value: 'backup',
               isSelected: _databaseMode == 'backup',
               onTap: () {
@@ -901,8 +925,6 @@ class _SettingsPageState extends State<SettingsPage> {
               context,
               title: '实时模式',
               subtitle: '直接读取微信加密数据库（实验性功能）',
-              icon: Icons.flash_on,
-              iconColor: Colors.orange,
               value: 'realtime',
               isSelected: _databaseMode == 'realtime',
               onTap: () {
@@ -923,12 +945,6 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.info_outline,
-                    size: 16,
-                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                  ),
-                  const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       _databaseMode == 'realtime' 
@@ -952,8 +968,6 @@ class _SettingsPageState extends State<SettingsPage> {
     BuildContext context, {
     required String title,
     required String subtitle,
-    required IconData icon,
-    required Color iconColor,
     required String value,
     required bool isSelected,
     required VoidCallback onTap,
@@ -977,18 +991,6 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         child: Row(
           children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: iconColor.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(
-                icon,
-                color: iconColor,
-                size: 20,
-              ),
-            ),
             const SizedBox(width: 16),
             Expanded(
               child: Column(
@@ -1013,18 +1015,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
-            if (isSelected)
-              Icon(
-                Icons.check_circle,
-                color: Theme.of(context).colorScheme.primary,
-                size: 24,
-              )
-            else
-              Icon(
-                Icons.radio_button_unchecked,
-                color: Theme.of(context).colorScheme.outline.withOpacity(0.3),
-                size: 24,
-              ),
           ],
         ),
       ),
@@ -1032,7 +1022,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildCacheManagementCard(BuildContext context) {
-    const wechatGreen = Color(0xFF07C160);
     
     return Card(
       elevation: 0,
@@ -1049,18 +1038,6 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: wechatGreen.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.cleaning_services,
-                    color: wechatGreen,
-                    size: 24,
-                  ),
-                ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
@@ -1089,10 +1066,8 @@ class _SettingsPageState extends State<SettingsPage> {
             // 清除缓存按钮
             SizedBox(
               width: double.infinity,
-              child: OutlinedButton.icon(
+              child: OutlinedButton(
                 onPressed: () => _showClearCacheDialog(),
-                icon: const Icon(Icons.delete_outline),
-                label: const Text('清除年度报告缓存'),
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
@@ -1101,6 +1076,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   foregroundColor: Colors.red,
                   side: const BorderSide(color: Colors.red),
                 ),
+                child: const Text('清除年度报告缓存'),
               ),
             ),
           ],
@@ -1136,19 +1112,6 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         title: Row(
           children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(
-                Icons.delete_outline,
-                color: Colors.red,
-                size: 24,
-              ),
-            ),
-            const SizedBox(width: 12),
             const Text('清除缓存'),
           ],
         ),
@@ -1174,12 +1137,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 children: [
                   Row(
                     children: [
-                      Icon(
-                        Icons.info_outline,
-                        size: 16,
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                      ),
-                      const SizedBox(width: 8),
                       Text(
                         '已缓存 $cacheCount 个报告',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1213,20 +1170,14 @@ class _SettingsPageState extends State<SettingsPage> {
             onPressed: () => Navigator.pop(context),
             child: const Text('取消'),
           ),
-          FilledButton.icon(
+          FilledButton(
             onPressed: () async {
               await AnnualReportCacheService.clearAllReports();
               if (context.mounted) {
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: const Row(
-                      children: [
-                        Icon(Icons.check_circle, color: Colors.white),
-                        SizedBox(width: 12),
-                        Text('已清除所有缓存'),
-                      ],
-                    ),
+                    content: const Text('已清除所有缓存'),
                     backgroundColor: Colors.green,
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(
@@ -1236,12 +1187,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 );
               }
             },
-            icon: const Icon(Icons.delete_sweep),
-            label: const Text('确认清除'),
             style: FilledButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
             ),
+            child: const Text('确认清除'),
           ),
         ],
       ),
@@ -1264,18 +1214,6 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.purple.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.description,
-                    color: Colors.purple,
-                    size: 24,
-                  ),
-                ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
@@ -1381,24 +1319,21 @@ class _SettingsPageState extends State<SettingsPage> {
             Row(
               children: [
                 Expanded(
-                  child: OutlinedButton.icon(
+                  child: OutlinedButton(
                     onPressed: () => _openLogFile(),
-                    icon: const Icon(Icons.open_in_new),
-                    label: const Text('打开日志'),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
+                    child: const Text('打开日志'),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: OutlinedButton.icon(
+                  child: OutlinedButton(
                     onPressed: () => _showClearLogDialog(),
-                    icon: const Icon(Icons.delete_outline),
-                    label: const Text('清空日志'),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(
@@ -1407,6 +1342,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       foregroundColor: Colors.orange,
                       side: const BorderSide(color: Colors.orange),
                     ),
+                    child: const Text('清空日志'),
                   ),
                 ),
               ],
@@ -1457,19 +1393,6 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         title: Row(
           children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.purple.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(
-                Icons.description,
-                color: Colors.purple,
-                size: 24,
-              ),
-            ),
-            const SizedBox(width: 12),
             const Text('应用日志'),
           ],
         ),
@@ -1505,19 +1428,6 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         title: Row(
           children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(
-                Icons.delete_outline,
-                color: Colors.orange,
-                size: 24,
-              ),
-            ),
-            const SizedBox(width: 12),
             const Text('清空日志'),
           ],
         ),
@@ -1545,20 +1455,14 @@ class _SettingsPageState extends State<SettingsPage> {
             onPressed: () => Navigator.pop(context),
             child: const Text('取消'),
           ),
-          FilledButton.icon(
+          FilledButton(
             onPressed: () async {
               await logger.clearLogs();
               if (context.mounted) {
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: const Row(
-                      children: [
-                        Icon(Icons.check_circle, color: Colors.white),
-                        SizedBox(width: 12),
-                        Text('已清空日志'),
-                      ],
-                    ),
+                    content: const Text('已清空日志'),
                     backgroundColor: Colors.green,
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(
@@ -1570,12 +1474,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 setState(() {});
               }
             },
-            icon: const Icon(Icons.delete_sweep),
-            label: const Text('确认清空'),
             style: FilledButton.styleFrom(
               backgroundColor: Colors.orange,
               foregroundColor: Colors.white,
             ),
+            child: const Text('确认清空'),
           ),
         ],
       ),

@@ -8,6 +8,7 @@ class ConfigService {
   static const String _keyDatabaseMode = 'database_mode'; // 'realtime' 或 'backup'
   static const String _keyImageXorKey = 'image_xor_key'; // 图片XOR密钥
   static const String _keyImageAesKey = 'image_aes_key'; // 图片AES密钥
+  static const String _keyManualWxid = 'manual_wxid'; // 手动输入的wxid
 
   /// 保存解密密钥
   Future<void> saveDecryptKey(String key) async {
@@ -81,6 +82,18 @@ class ConfigService {
     return prefs.getString(_keyImageAesKey);
   }
 
+  /// 保存手动输入的wxid
+  Future<void> saveManualWxid(String wxid) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyManualWxid, wxid);
+  }
+
+  /// 获取手动输入的wxid
+  Future<String?> getManualWxid() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_keyManualWxid);
+  }
+
   /// 清除所有配置
   Future<void> clearAll() async {
     final prefs = await SharedPreferences.getInstance();
@@ -90,5 +103,6 @@ class ConfigService {
     await prefs.remove(_keyDatabaseMode);
     await prefs.remove(_keyImageXorKey);
     await prefs.remove(_keyImageAesKey);
+    await prefs.remove(_keyManualWxid);
   }
 }

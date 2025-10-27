@@ -7,7 +7,6 @@ import '../widgets/chat_session_item.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/message_loading_shimmer.dart';
 import '../utils/string_utils.dart';
-import '../services/chat_export_service.dart';
 import '../services/logger_service.dart';
 
 /// 聊天记录页面
@@ -32,10 +31,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Map<String, String> _senderDisplayNames = {};
   late AnimationController _refreshController;
   DateTime? _lastInitialLoadTime;
-
-
-  DateTimeRange? _selectedRange=new DateTimeRange(start: DateTime.now().subtract(const Duration(days: 1)),
-    end: DateTime.now());
 
 
   @override
@@ -363,173 +358,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     return '群成员';
   }
 
-  /// 显示导出选项对话框
-  void _showExportDialog() {
-    if (_selectedSession == null || _messages.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先选择会话并加载消息')),
-      );
-      return;
-    }
-
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-          builder: (context,setState) {
-      return  AlertDialog(
-          title: const Text('导出聊天记录'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('会话: ${_getSessionDisplayName(_selectedSession!)}'),
-              const SizedBox(height: 8),
-              Text('消息数量: ${_messages.length} 条'),
-              const SizedBox(height: 16),
-              Text('当前日期范围: ${_selectedRange!.start.toLocal().toString().split(' ')[0]} 至 ${_selectedRange!.end.toLocal().toString().split(' ')[0]}'),
-              TextButton(
-                onPressed: () async {
-                  final DateTimeRange? picked = await showDateRangePicker(
-                    context: context,
-                    firstDate: DateTime(2020),
-                    lastDate: DateTime(2100),
-                    initialDateRange: _selectedRange,
-                  );
-                  if (picked != null) {
-                    setState(() {
-                      _selectedRange = picked;
-                    });
-                  }
-                },
-                child: Text(
-                  "选择导出日期范围" // 这里可以进一步格式化只显示年月日
-                ),
-              ),
-
-              const SizedBox(height: 16),
-              const Text('请选择导出格式:'),
-
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _exportChat('json');
-              },
-              child: const Text('JSON'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _exportChat('html');
-              },
-              child: const Text('HTML'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _exportChat('excel');
-              },
-              child: const Text('Excel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-          ],
-        );
-
-      },),);
-
-  }
-
-  /// 导出聊天记录
-  Future<void> _exportChat(String format) async {
-    if (_selectedSession == null || _messages.isEmpty) return;
-
-    try {
-      // 显示加载中对话框
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const Center(
-          child: Card(
-            child: Padding(
-              padding: EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('正在导出...'),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
-
-      // 首先获取所有消息（而不只是当前加载的）
-      final appState = context.read<AppState>();
-      final endOfDay = DateTime(_selectedRange!.end.year, _selectedRange!.end.month, _selectedRange!.end.day + 1)
-          .subtract(const Duration(seconds: 1));
-
-      final allMessages = await _getAllMessagesBydate(appState,_selectedRange!.start.copyWith(hour: 0, minute: 0, second: 0).millisecondsSinceEpoch ~/ 1000, endOfDay.millisecondsSinceEpoch ~/ 1000);
-
-      final exportService = ChatExportService(appState.databaseService);
-      bool success = false;
-
-      switch (format) {
-        case 'json':
-          success = await exportService.exportToJson(_selectedSession!, allMessages);
-          break;
-        case 'html':
-          success = await exportService.exportToHtml(_selectedSession!, allMessages);
-          break;
-        case 'excel':
-          success = await exportService.exportToExcel(_selectedSession!, allMessages);
-          break;
-      }
-
-      // 关闭加载对话框
-      if (mounted) {
-        Navigator.pop(context);
-      }
-
-      // 显示结果
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(success ? '导出成功' : '导出失败'),
-            backgroundColor: success ? Colors.green : Colors.red,
-          ),
-        );
-      }
-    } catch (e) {
-      // 关闭加载对话框
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出失败: $e')),
-        );
-      }
-    }
-  }
-  
-  ///根据日期选择消息
-  Future<List<Message>> _getAllMessagesBydate(AppState appState,int beginTimestamp,int endTimestamp) async {
-    if (_selectedSession == null) return [];
-
-
-    final messages = await appState.databaseService.getMessagesByDate(
-      _selectedSession!.username,
-      beginTimestamp,
-      endTimestamp
-    );
-    return messages.reversed.toList();
-   }
-
   @override
   Widget build(BuildContext context) {
     return Row(
@@ -718,11 +546,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                                 ),
                               ],
                             ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.download_rounded),
-                            onPressed: _showExportDialog,
-                            tooltip: '导出聊天记录',
                           ),
                         ],
                       ),

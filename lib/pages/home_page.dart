@@ -8,6 +8,7 @@ import 'chat_page.dart';
 import 'welcome_page.dart';
 import 'data_management_page.dart';
 import 'analytics_page.dart';
+import 'chat_export_page.dart';
 
 /// 应用主页面，包含侧边栏和内容区域
 class HomePage extends StatelessWidget {
@@ -37,6 +38,8 @@ class HomePage extends StatelessWidget {
                       currentPage = const DataManagementPage();
                     } else if (appState.currentPage == 'analytics') {
                       currentPage = AnalyticsPage(databaseService: appState.databaseService);
+                    } else if (appState.currentPage == 'export') {
+                      currentPage = const ChatExportPage();
                     } else if (appState.isConfigured && appState.currentPage == 'chat') {
                       currentPage = const ChatPage();
                     } else {

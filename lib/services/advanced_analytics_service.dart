@@ -4,6 +4,32 @@ import 'database_service.dart';
 import 'analytics_service.dart';
 
 /// 高级分析服务
+/// 
+/// 核心分析维度（多维度排名优化）：
+/// 
+/// 1. 年度挚友榜 - 总互动数排名
+///    衡量指标：总消息数（我发+对方发）
+///    含义：互动最频繁的关系
+///    排序：总消息数 ↓
+/// 
+/// 2. 年度倾诉对象 - 倾诉指数排名（我话最多）
+///    衡量指标：我的发送数 / 对方的发送数
+///    含义：最想向TA倾诉的人，代表你对TA最信任最有话说
+///    排序：发送比例 ↓（比值越大越靠前）
+///    示例：如果某朋友是 我发100条：对方发50条，比例=2.0
+/// 
+/// 3. 年度最佳听众 - 倾听指数排名（TA话最多）
+///    衡量指标：对方的发送数 / 我的发送数
+///    含义：最无私的倾听者，代表TA最愿意向你分享
+///    排序：接收比例 ↓（比值越大越靠前）
+///    示例：如果某朋友是 对方发100条：我发50条，比例=2.0
+/// 
+/// 这三个维度形成了关系的完整画像：
+/// - 挚友：互动总量高
+/// - 倾诉对象：你主动倾诉
+/// - 最佳听众：TA主动分享
+/// 
+/// 因此这三个排名通常会不同，避免了重复和重叠的问题。
 class AdvancedAnalyticsService {
   final DatabaseService _databaseService;
   final AnalyticsService _analyticsService;
@@ -322,55 +348,43 @@ class AdvancedAnalyticsService {
     };
   }
 
-  /// 深夜密友
+  /// 深夜密友 - 优化版（使用数据库直接统计，避免加载所有消息）
   Future<Map<String, dynamic>> findMidnightChatKing() async {
     final sessions = await _databaseService.getSessions();
     final privateSessions = sessions
         .where((s) => !s.isGroup && !_isSystemAccount(s.username))
         .toList();
 
-    final midnightCounts = <String, int>{};
+    final midnightStats = <String, Map<String, dynamic>>{};
     final displayNames = await _databaseService.getDisplayNames(
       privateSessions.map((s) => s.username).toList(),
     );
 
-    // 用于计算最活跃的深夜时段和总消息数
-    Map<int, int>? kingHourlyData;
-    int maxMidnightCount = 0;
-    int kingAllMessages = 0; // 这个用户全天的消息数
+    int totalMidnightMessages = 0; // 所有人的深夜消息总数
 
     for (final session in privateSessions) {
       try {
-        final allMessages = await _analyticsService.getAllMessagesForSession(session.username);
-        final messages = _filterMessagesByYear(allMessages);
-        int count = 0;
-        final hourlyCount = <int, int>{};
+        // 使用数据库直接统计，避免加载所有消息到内存
+        final stats = await _databaseService.getMidnightMessageStats(
+          session.username,
+          filterYear: _filterYear,
+        );
         
-        for (final msg in messages) {
-          final time = DateTime.fromMillisecondsSinceEpoch(msg.createTime * 1000);
-          // 深夜定义为 0:00-5:59（凌晨到早上6点前）
-          if (time.hour >= 0 && time.hour < 6) {
-            count++;
-            hourlyCount[time.hour] = (hourlyCount[time.hour] ?? 0) + 1;
-          }
-        }
+        final midnightCount = stats['midnightCount'] as int;
         
-        if (count > 0) {
-          midnightCounts[session.username] = count;
-          
-          // 记录最多深夜消息的用户信息
-          if (count > maxMidnightCount) {
-            maxMidnightCount = count;
-            kingHourlyData = hourlyCount;
-            kingAllMessages = messages.length; // 这个用户的全部消息数
-          }
+        if (midnightCount > 0) {
+          midnightStats[session.username] = {
+            'count': midnightCount,
+            'hourlyData': stats['hourlyData'] as Map<int, int>,
+          };
+          totalMidnightMessages += midnightCount;
         }
       } catch (e) {
         // 跳过错误
       }
     }
 
-    if (midnightCounts.isEmpty) {
+    if (midnightStats.isEmpty) {
       return {
         'username': null,
         'displayName': null,
@@ -381,17 +395,22 @@ class AdvancedAnalyticsService {
       };
     }
 
-    final king = midnightCounts.entries.reduce((a, b) => a.value > b.value ? a : b);
+    // 找出深夜消息最多的好友
+    final king = midnightStats.entries
+        .reduce((a, b) => (a.value['count'] as int) > (b.value['count'] as int) ? a : b);
 
-    // 计算占比（深夜消息数 / 这个用户全部消息数）
-    final percentage = kingAllMessages > 0 
-        ? (king.value / kingAllMessages * 100).toStringAsFixed(1)
+    final kingCount = king.value['count'] as int;
+    
+    // 计算占比（这个好友的深夜消息数 / 所有深夜消息总数）
+    final percentage = totalMidnightMessages > 0 
+        ? (kingCount / totalMidnightMessages * 100).toStringAsFixed(1)
         : '0.0';
 
     // 找出最活跃的深夜时段（0-5点中哪个时段最活跃）
+    final hourlyData = king.value['hourlyData'] as Map<int, int>;
     int mostActiveHour = 0;
-    if (kingHourlyData != null && kingHourlyData.isNotEmpty) {
-      mostActiveHour = kingHourlyData.entries
+    if (hourlyData.isNotEmpty) {
+      mostActiveHour = hourlyData.entries
           .reduce((a, b) => a.value > b.value ? a : b)
           .key;
     }
@@ -399,8 +418,8 @@ class AdvancedAnalyticsService {
     return {
       'username': king.key,
       'displayName': displayNames[king.key] ?? king.key,
-      'count': king.value, // 深夜消息数
-      'totalMessages': kingAllMessages, // 全部消息数
+      'count': kingCount, // 深夜消息数
+      'totalMessages': totalMidnightMessages, // 所有深夜消息总数
       'percentage': percentage,
       'mostActiveHour': mostActiveHour,
     };
@@ -525,19 +544,19 @@ class AdvancedAnalyticsService {
     }).toList();
   }
 
-  /// 年度倾诉对象（我的发送数排名）
+  /// 年度倾诉对象（我的发送数 / 对方发送数 的比值排名）
+  /// 找出"我话最多但对方话较少"的关系 - 代表最想向TA倾诉的人
   Future<List<FriendshipRanking>> getConfidantObjects(int limit) async {
     final sessions = await _databaseService.getSessions();
     final privateSessions = sessions
         .where((s) => !s.isGroup && !_isSystemAccount(s.username))
         .toList();
 
-    final sentStats = <String, Map<String, dynamic>>{};
+    final confidentStats = <String, Map<String, dynamic>>{};
     final displayNames = await _databaseService.getDisplayNames(
       privateSessions.map((s) => s.username).toList(),
     );
 
-    int totalSent = 0;
     for (final session in privateSessions) {
       try {
         final stats = await _databaseService.getSessionMessageStats(
@@ -545,80 +564,112 @@ class AdvancedAnalyticsService {
           filterYear: _filterYear,
         );
         final sentCount = stats['sent'] as int;
+        final receivedCount = stats['received'] as int;
+        final totalMessages = sentCount + receivedCount;
         
-        if (sentCount > 0) {
-          sentStats[session.username] = {
-            'count': sentCount,
+        // 过滤：消息数少于50条的不计算（关系需要一定深度）
+        if (totalMessages < 50) continue;
+        
+        // 只计算对方有回应的（接收数 > 0）
+        if (receivedCount > 0) {
+          // 计算倾诉指数：我发送数 / 对方发送数
+          // 比值越大，说明我越想向TA倾诉
+          final confidentIndex = sentCount / receivedCount;
+          
+          confidentStats[session.username] = {
+            'count': sentCount, // 显示我发送的消息数
+            'receivedCount': receivedCount,
+            'index': confidentIndex,
             'displayName': displayNames[session.username] ?? session.username,
           };
-          totalSent += sentCount;
         }
       } catch (e) {
         // 跳过错误
       }
     }
 
-    if (sentStats.isEmpty) return [];
+    if (confidentStats.isEmpty) return [];
 
-    final sorted = sentStats.entries.toList()
-      ..sort((a, b) => b.value['count'].compareTo(a.value['count']));
+    // 按倾诉指数从高到低排序（我话最多的优先）
+    final sorted = confidentStats.entries.toList()
+      ..sort((a, b) => b.value['index'].compareTo(a.value['index']));
 
     return sorted.take(limit).map((e) {
-      final percentage = totalSent > 0 ? (e.value['count'] / totalSent * 100) : 0.0;
+      final percentage = (e.value['index'] as double) * 10; // 指数转换为显示百分比
       return FriendshipRanking(
         username: e.key,
         displayName: e.value['displayName'],
         count: e.value['count'],
-        percentage: percentage,
+        percentage: (percentage).clamp(0, 100).toDouble(), // 限制在0-100
+        details: {
+          'receivedCount': e.value['receivedCount'],
+          'confidentIndex': (e.value['index'] as double).toStringAsFixed(2),
+        },
       );
     }).toList();
   }
 
-  /// 年度最佳听众（对方发送数排名）
+  /// 年度最佳听众（对方发送数 / 我的发送数 的比值排名）
+  /// 找出"对方话最多但我话较少"的关系 - 代表最无私的倾听者
   Future<List<FriendshipRanking>> getBestListeners(int limit) async {
     final sessions = await _databaseService.getSessions();
     final privateSessions = sessions
         .where((s) => !s.isGroup && !_isSystemAccount(s.username))
         .toList();
 
-    final receivedStats = <String, Map<String, dynamic>>{};
+    final listenerStats = <String, Map<String, dynamic>>{};
     final displayNames = await _databaseService.getDisplayNames(
       privateSessions.map((s) => s.username).toList(),
     );
 
-    int totalReceived = 0;
     for (final session in privateSessions) {
       try {
         final stats = await _databaseService.getSessionMessageStats(
           session.username,
           filterYear: _filterYear,
         );
+        final sentCount = stats['sent'] as int;
         final receivedCount = stats['received'] as int;
+        final totalMessages = sentCount + receivedCount;
         
-        if (receivedCount > 0) {
-          receivedStats[session.username] = {
-            'count': receivedCount,
+        // 过滤：消息数少于50条的不计算
+        if (totalMessages < 50) continue;
+        
+        // 只计算我有发送消息的（发送数 > 0）
+        if (sentCount > 0) {
+          // 计算倾听指数：对方发送数 / 我发送数
+          // 比值越大，说明TA越无私地倾听我
+          final listenerIndex = receivedCount / sentCount;
+          
+          listenerStats[session.username] = {
+            'count': receivedCount, // 显示对方发送的消息数
+            'sentCount': sentCount,
+            'index': listenerIndex,
             'displayName': displayNames[session.username] ?? session.username,
           };
-          totalReceived += receivedCount;
         }
       } catch (e) {
         // 跳过错误
       }
     }
 
-    if (receivedStats.isEmpty) return [];
+    if (listenerStats.isEmpty) return [];
 
-    final sorted = receivedStats.entries.toList()
-      ..sort((a, b) => b.value['count'].compareTo(a.value['count']));
+    // 按倾听指数从高到低排序（对方话最多的优先）
+    final sorted = listenerStats.entries.toList()
+      ..sort((a, b) => b.value['index'].compareTo(a.value['index']));
 
     return sorted.take(limit).map((e) {
-      final percentage = totalReceived > 0 ? (e.value['count'] / totalReceived * 100) : 0.0;
+      final percentage = (e.value['index'] as double) * 10; // 指数转换为显示百分比
       return FriendshipRanking(
         username: e.key,
         displayName: e.value['displayName'],
         count: e.value['count'],
-        percentage: percentage,
+        percentage: (percentage).clamp(0, 100).toDouble(), // 限制在0-100
+        details: {
+          'sentCount': e.value['sentCount'],
+          'listenerIndex': (e.value['index'] as double).toStringAsFixed(2),
+        },
       );
     }).toList();
   }
