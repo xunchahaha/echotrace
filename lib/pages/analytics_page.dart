@@ -692,14 +692,15 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 ),
                 SegmentedButton<int>(
                   segments: const [
-                    ButtonSegment<int>(value: 10, label: Text('10')),
-                    ButtonSegment<int>(value: 20, label: Text('20')),
-                    ButtonSegment<int>(value: 50, label: Text('50')),
+                    ButtonSegment<int>(value: 10, label: Text('Top 10')),
+                    ButtonSegment<int>(value: 20, label: Text('Top 20')),
+                    ButtonSegment<int>(value: 50, label: Text('Top 50')),
                   ],
                   selected: {_topN},
                   onSelectionChanged: (Set<int> newSelection) {
+                    final newTopN = newSelection.first;
                     setState(() {
-                      _topN = newSelection.first;
+                      _topN = newTopN;
                       _contactRankings = _allContactRankings?.take(_topN).toList();
                     });
                   },
@@ -711,27 +712,34 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
               ],
             ),
             const SizedBox(height: 16),
-            ..._contactRankings!.asMap().entries.map((entry) {
-              final index = entry.key;
-              final ranking = entry.value;
-              
-              return ListTile(
-                leading: CircleAvatar(
-                  child: Text('${index + 1}'),
-                ),
-                title: Text(ranking.displayName),
-                subtitle: Text(
-                  '发送: ${ranking.sentCount} | 接收: ${ranking.receivedCount}',
-                ),
-                trailing: Text(
-                  '${ranking.messageCount}',
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              );
-            }).toList(),
+            Builder(
+              builder: (context) {
+                return Column(
+                  children: _contactRankings!.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final ranking = entry.value;
+                    
+                    return ListTile(
+                      key: ValueKey('${ranking.username}_$index'),
+                      leading: CircleAvatar(
+                        child: Text('${index + 1}'),
+                      ),
+                      title: Text(ranking.displayName),
+                      subtitle: Text(
+                        '发送: ${ranking.sentCount} | 接收: ${ranking.receivedCount}',
+                      ),
+                      trailing: Text(
+                        '${ranking.messageCount}',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                );
+              },
+            ),
           ],
         ),
       ),
