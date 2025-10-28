@@ -1278,27 +1278,37 @@ class DatabaseService {
 
   /// 批量获取多个会话的统计数据
   Future<Map<String, Map<String, dynamic>>> getBatchSessionStats(List<String> sessionIds) async {
+    await logger.debug('DatabaseService', '========== 开始批量获取会话统计 ==========');
+    await logger.debug('DatabaseService', '需要查询的会话数: ${sessionIds.length}');
+
     if (_sessionDb == null) {
+      await logger.error('DatabaseService', '数据库未连接');
       throw Exception('数据库未连接');
     }
 
     final result = <String, Map<String, dynamic>>{};
-    
+
     // 使用缓存的数据库连接
+    await logger.debug('DatabaseService', '获取缓存的数据库连接');
     final cachedDbs = await _getCachedMessageDatabases();
-    
+    await logger.debug('DatabaseService', '缓存的数据库数量: ${cachedDbs.length}');
+
+    int processedCount = 0;
+    int emptySessionCount = 0;
+    int errorSessionCount = 0;
+
     for (final sessionId in sessionIds) {
       try {
         // 收集该会话在所有数据库的表
         final dbInfos = <_DatabaseTableInfo>[];
-        
+
         for (final dbInfo in cachedDbs) {
           try {
             final tableName = await _getMessageTableName(
-              sessionId, 
+              sessionId,
               dbInfo.database,
             );
-            
+
             if (tableName != null) {
               dbInfos.add(_DatabaseTableInfo(
                 database: dbInfo.database,
@@ -1311,8 +1321,17 @@ class DatabaseService {
             // 忽略错误
           }
         }
-        
-        if (dbInfos.isEmpty) continue;
+
+        if (dbInfos.isEmpty) {
+          emptySessionCount++;
+          // 每处理50个会话记录一次
+          if ((processedCount + 1) % 50 == 0) {
+            await logger.debug('DatabaseService', '已处理 ${processedCount + 1}/${sessionIds.length} 个会话（空会话: $emptySessionCount, 错误: $errorSessionCount）');
+          }
+          continue;
+        }
+
+        await logger.debug('DatabaseService', '会话 $sessionId 在 ${dbInfos.length} 个数据库中找到消息表');
         
         // 统计数据
         int totalCount = 0;
@@ -1326,13 +1345,13 @@ class DatabaseService {
         int? firstTime;
         int? lastTime;
         final datesSet = <String>{};
-        
+
         // 从所有数据库累加统计
         for (final dbInfo in dbInfos) {
           try {
             // 一次查询获取所有统计
             final statResult = await dbInfo.database.rawQuery('''
-              SELECT 
+              SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN real_sender_id = (SELECT rowid FROM Name2Id WHERE user_name = ?) THEN 1 ELSE 0 END) as sent,
                 SUM(CASE WHEN real_sender_id != (SELECT rowid FROM Name2Id WHERE user_name = ?) THEN 1 ELSE 0 END) as received,
@@ -1345,9 +1364,10 @@ class DatabaseService {
                 MAX(create_time) as last
               FROM ${dbInfo.tableName}
             ''', [_currentAccountWxid ?? '', _currentAccountWxid ?? '']);
-            
+
             final row = statResult.first;
-            totalCount += (row['total'] as int?) ?? 0;
+            final dbTotal = (row['total'] as int?) ?? 0;
+            totalCount += dbTotal;
             sentCount += (row['sent'] as int?) ?? 0;
             receivedCount += (row['received'] as int?) ?? 0;
             textCount += (row['text'] as int?) ?? 0;
@@ -1355,7 +1375,7 @@ class DatabaseService {
             voiceCount += (row['voice'] as int?) ?? 0;
             videoCount += (row['video'] as int?) ?? 0;
             otherCount += (row['other'] as int?) ?? 0;
-            
+
             final dbFirst = row['first'] as int?;
             final dbLast = row['last'] as int?;
             if (dbFirst != null && (firstTime == null || dbFirst < firstTime)) {
@@ -1364,21 +1384,43 @@ class DatabaseService {
             if (dbLast != null && (lastTime == null || dbLast > lastTime)) {
               lastTime = dbLast;
             }
-            
+
+            await logger.debug('DatabaseService', '  表 ${dbInfo.tableName}: 消息数=$dbTotal, 首条=${dbFirst != null ? DateTime.fromMillisecondsSinceEpoch(dbFirst * 1000) : null}, 末条=${dbLast != null ? DateTime.fromMillisecondsSinceEpoch(dbLast * 1000) : null}');
+
             // 获取日期列表
             final dateResult = await dbInfo.database.rawQuery('''
               SELECT DISTINCT DATE(create_time, 'unixepoch', 'localtime') as date
               FROM ${dbInfo.tableName}
             ''');
-            
+
+            final beforeDateCount = datesSet.length;
             for (final dateRow in dateResult) {
-              datesSet.add(dateRow['date'] as String);
+              final date = dateRow['date'] as String;
+              datesSet.add(date);
             }
-          } catch (e) {
-            // 忽略错误
+            final addedDates = datesSet.length - beforeDateCount;
+            await logger.debug('DatabaseService', '  表 ${dbInfo.tableName}: 查询到 ${dateResult.length} 个日期，新增 $addedDates 个唯一日期（总计: ${datesSet.length}）');
+
+            // 如果日期数为0但有消息，记录详细信息
+            if (dateResult.isEmpty && dbTotal > 0) {
+              await logger.warning('DatabaseService', '  警告：表 ${dbInfo.tableName} 有 $dbTotal 条消息但日期查询为空！');
+              // 尝试直接查询一条消息看看时间戳
+              final sampleResult = await dbInfo.database.rawQuery('''
+                SELECT create_time, DATE(create_time, 'unixepoch', 'localtime') as date
+                FROM ${dbInfo.tableName}
+                LIMIT 1
+              ''');
+              if (sampleResult.isNotEmpty) {
+                await logger.debug('DatabaseService', '  样本消息: create_time=${sampleResult.first['create_time']}, date=${sampleResult.first['date']}');
+              }
+            }
+          } catch (e, stackTrace) {
+            await logger.warning('DatabaseService', '  查询表 ${dbInfo.tableName} 失败: $e\n$stackTrace');
           }
         }
-        
+
+        processedCount++;
+
         result[sessionId] = {
           'total': totalCount,
           'sent': sentCount,
@@ -1392,11 +1434,28 @@ class DatabaseService {
           'last': lastTime,
           'activeDays': datesSet.length,
         };
-      } catch (e) {
+
+        await logger.debug('DatabaseService', '会话 $sessionId 统计完成: 总消息=$totalCount, 活跃天数=${datesSet.length}, 首条=${firstTime != null ? DateTime.fromMillisecondsSinceEpoch(firstTime * 1000) : null}');
+
+        // 如果活跃天数为0但有消息，记录警告
+        if (datesSet.isEmpty && totalCount > 0) {
+          await logger.warning('DatabaseService', '警告：会话 $sessionId 有 $totalCount 条消息但活跃天数为0！');
+        }
+
+        // 每处理50个会话记录一次
+        if (processedCount % 50 == 0) {
+          await logger.debug('DatabaseService', '已处理 $processedCount/${sessionIds.length} 个会话（空会话: $emptySessionCount, 错误: $errorSessionCount）');
+        }
+      } catch (e, stackTrace) {
         // 该会话查询失败，跳过
+        errorSessionCount++;
+        await logger.warning('DatabaseService', '会话 $sessionId 查询失败: $e\n$stackTrace');
       }
     }
-    
+
+    await logger.info('DatabaseService', '批量查询完成: 成功=${result.length}, 空会话=$emptySessionCount, 错误=$errorSessionCount');
+    await logger.debug('DatabaseService', '========== 批量获取会话统计完成 ==========');
+
     return result;
   }
 
@@ -2829,6 +2888,197 @@ class DatabaseService {
     }
   }
 
+  /// 获取数据库中最新的消息日期
+  Future<DateTime?> getLatestMessageDate() async {
+    if (!isConnected) {
+      return null;
+    }
+
+    try {
+      final cachedDbs = await _getCachedMessageDatabases();
+
+      int? maxTimestamp;
+
+      for (final cachedDb in cachedDbs) {
+        try {
+          // 获取所有消息表
+          final tables = await cachedDb.database.rawQuery(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'",
+          );
+
+          for (final table in tables) {
+            final tableName = table['name'] as String;
+
+            try {
+              // 直接查询该表的最大create_time
+              final result = await cachedDb.database.rawQuery(
+                'SELECT MAX(create_time) as max_time FROM $tableName'
+              );
+
+              final timestamp = result.first['max_time'] as int?;
+              if (timestamp != null && (maxTimestamp == null || timestamp > maxTimestamp)) {
+                maxTimestamp = timestamp;
+              }
+            } catch (e) {
+              // 忽略单个表的错误
+            }
+          }
+        } catch (e) {
+          // 忽略单个数据库的错误
+        }
+      }
+
+      if (maxTimestamp == null) {
+        return null;
+      }
+
+      // 将时间戳转换为DateTime
+      return DateTime.fromMillisecondsSinceEpoch(maxTimestamp * 1000);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// 批量获取所有私聊会话的按日期消息统计
+  /// 返回格式：{username: {date: {count: int, firstIsSend: bool}}}
+  Future<Map<String, Map<String, Map<String, dynamic>>>> getAllPrivateSessionsMessagesByDate({
+    int? filterYear,
+  }) async {
+    if (!isConnected) {
+      throw Exception('数据库未连接');
+    }
+
+    try {
+      final result = <String, Map<String, Map<String, dynamic>>>{};
+
+      // 构建年份过滤条件
+      String? yearFilter;
+      if (filterYear != null) {
+        final startTimestamp = DateTime(filterYear, 1, 1).millisecondsSinceEpoch ~/ 1000;
+        final endTimestamp = DateTime(filterYear + 1, 1, 1).millisecondsSinceEpoch ~/ 1000;
+        yearFilter = ' AND create_time >= $startTimestamp AND create_time < $endTimestamp';
+      }
+
+      final cachedDbs = await _getCachedMessageDatabases();
+
+      for (final cachedDb in cachedDbs) {
+        try {
+          // 获取所有消息表
+          final tables = await cachedDb.database.rawQuery(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'",
+          );
+
+          for (final table in tables) {
+            final tableName = table['name'] as String;
+
+            try {
+              // 从表名提取会话ID（Msg_<hash> 格式）
+              // 需要通过查询 Name2Id 表来找到对应的 username
+
+              // 一次查询获取该表所有日期的统计
+              final rows = await cachedDb.database.rawQuery('''
+                SELECT
+                  DATE(create_time, 'unixepoch', 'localtime') as date,
+                  COUNT(*) as count,
+                  (SELECT CASE WHEN real_sender_id = (SELECT rowid FROM Name2Id WHERE user_name = ?) THEN 1 ELSE 0 END
+                   FROM $tableName t2
+                   WHERE DATE(t2.create_time, 'unixepoch', 'localtime') = DATE(t1.create_time, 'unixepoch', 'localtime')
+                   ${yearFilter ?? ''}
+                   ORDER BY t2.create_time ASC LIMIT 1) as first_is_send
+                FROM $tableName t1
+                WHERE 1=1 ${yearFilter ?? ''}
+                GROUP BY date
+                ORDER BY date
+              ''', [_currentAccountWxid ?? '']);
+
+              if (rows.isEmpty) continue;
+
+              // 从表名推断会话username（需要查询session表）
+              // 这里我们需要找到这个表对应的会话
+              // 由于表名是 Msg_<hash>，我们需要通过其他方式关联
+
+              // 暂时跳过，因为需要重新设计这个方法
+              // 改为按会话批量查询的方式
+
+            } catch (e) {
+              // 忽略单个表的错误
+            }
+          }
+        } catch (e) {
+          // 忽略单个数据库的错误
+        }
+      }
+
+      return result;
+    } catch (e) {
+      await logger.error('DatabaseService', '批量获取会话消息统计失败', e);
+      rethrow;
+    }
+  }
+
+  /// 批量获取所有私聊会话的消息日期列表（优化版：减少查询次数）
+  /// 返回格式：{username: [date1, date2, ...]}
+  Future<Map<String, Set<String>>> getAllPrivateSessionsMessageDates({
+    int? filterYear,
+  }) async {
+    if (!isConnected) {
+      throw Exception('数据库未连接');
+    }
+
+    try {
+      final result = <String, Set<String>>{};
+
+      // 构建年份过滤条件
+      String? yearFilter;
+      if (filterYear != null) {
+        final startTimestamp = DateTime(filterYear, 1, 1).millisecondsSinceEpoch ~/ 1000;
+        final endTimestamp = DateTime(filterYear + 1, 1, 1).millisecondsSinceEpoch ~/ 1000;
+        yearFilter = ' AND create_time >= $startTimestamp AND create_time < $endTimestamp';
+      }
+
+      // 获取所有私聊会话
+      final sessions = await getSessions();
+      final privateSessions = sessions.where((s) => !s.isGroup).toList();
+
+      // 使用缓存的数据库连接
+      final cachedDbs = await _getCachedMessageDatabases();
+
+      // 为每个会话收集表信息
+      for (final session in privateSessions) {
+        final allDates = <String>{};
+
+        // 从所有数据库查询该会话的消息日期
+        for (final cachedDb in cachedDbs) {
+          try {
+            final tableName = await _getMessageTableName(session.username, cachedDb.database);
+            if (tableName == null) continue;
+
+            final rows = await cachedDb.database.rawQuery('''
+              SELECT DISTINCT DATE(create_time, 'unixepoch', 'localtime') as date
+              FROM $tableName
+              WHERE 1=1 ${yearFilter ?? ''}
+            ''');
+
+            for (final row in rows) {
+              allDates.add(row['date'] as String);
+            }
+          } catch (e) {
+            // 忽略错误
+          }
+        }
+
+        if (allDates.isNotEmpty) {
+          result[session.username] = allDates;
+        }
+      }
+
+      return result;
+    } catch (e) {
+      await logger.error('DatabaseService', '批量获取会话消息日期失败', e);
+      rethrow;
+    }
+  }
+
   /// 获取文本消息长度统计
   Future<Map<String, dynamic>> getTextMessageLengthStats({
     int? year,
@@ -2933,65 +3183,157 @@ class DatabaseService {
     required bool isMyResponse, // true: 我回复对方, false: 对方回复我
     int? year,
     Function(int current, int total, String currentUser)? onProgress,
+    Function(String message, {String level})? onLog,
   }) async {
     if (!isConnected) {
       throw Exception('数据库未连接');
     }
 
+    // 辅助函数：记录日志（优先使用 onLog 回调，否则使用 LoggerService）
+    Future<void> log(String message, {String level = 'info'}) async {
+      if (onLog != null) {
+        onLog(message, level: level);
+      } else {
+        switch (level) {
+          case 'debug':
+            await logger.debug('DatabaseService', message);
+            break;
+          case 'warning':
+            await logger.warning('DatabaseService', message);
+            break;
+          case 'error':
+            await logger.error('DatabaseService', message);
+            break;
+          default:
+            await logger.info('DatabaseService', message);
+        }
+      }
+    }
+
     try {
+      await log('========== 开始分析响应速度 ==========', level: 'debug');
+      await log('分析类型: ${isMyResponse ? "我回复对方" : "对方回复我"}', level: 'debug');
+      await log('年份过滤: ${year ?? "无"}', level: 'debug');
+
       final sessions = await getSessions();
       final privateSessions = sessions.where((s) => !s.isGroup).toList();
+      await log('找到 ${privateSessions.length} 个私聊会话', level: 'info');
+
+      // 优化1：批量获取显示名称
       final displayNames = await getDisplayNames(privateSessions.map((s) => s.username).toList());
-      
+
       final results = <Map<String, dynamic>>[];
+      int processedCount = 0;
+      int hasDataCount = 0;
+
+      // 优化2：缓存所有数据库，避免重复获取
+      final cachedDbs = await _getCachedMessageDatabases();
+
+      // 优化3：预先查询当前用户的 rowid（所有数据库共享同一个 Name2Id 表）
+      int? myRowId;
+      if (cachedDbs.isNotEmpty) {
+        try {
+          final myRowIdRows = await cachedDbs.first.database.rawQuery(
+            'SELECT rowid FROM Name2Id WHERE user_name = ? LIMIT 1',
+            [_currentAccountWxid ?? '']
+          );
+          if (myRowIdRows.isNotEmpty) {
+            myRowId = myRowIdRows.first['rowid'] as int?;
+            await log('当前用户 $_currentAccountWxid 在 Name2Id 表中的 rowid: $myRowId', level: 'debug');
+          } else {
+            await log('警告：未在 Name2Id 表中找到当前用户 $_currentAccountWxid', level: 'warning');
+          }
+        } catch (e) {
+          await log('查询 Name2Id 表失败: $e', level: 'warning');
+        }
+      }
+
+      if (myRowId == null) {
+        await log('无法确定当前用户的 rowid，分析终止', level: 'error');
+        return [];
+      }
 
       for (int idx = 0; idx < privateSessions.length; idx++) {
         final session = privateSessions[idx];
-        
+        final displayName = displayNames[session.username] ?? session.username;
+
         // 报告进度
-        onProgress?.call(idx + 1, privateSessions.length, displayNames[session.username] ?? session.username);
+        onProgress?.call(idx + 1, privateSessions.length, displayName);
+
         try {
-          final dbInfos = await _collectTableInfosAcrossDatabases(session.username);
+          // 优化4：使用已缓存的数据库列表
+          final dbInfos = <_DatabaseTableInfo>[];
+          for (final dbInfo in cachedDbs) {
+            try {
+              final tableName = await _getMessageTableName(
+                session.username,
+                dbInfo.database,
+              );
+              if (tableName != null) {
+                dbInfos.add(_DatabaseTableInfo(
+                  database: dbInfo.database,
+                  tableName: tableName,
+                  latestTimestamp: 0,
+                  needsClose: false,
+                ));
+              }
+            } catch (e) {
+              // 忽略错误
+            }
+          }
+
+          // 如果没有找到消息表，跳过
+          if (dbInfos.isEmpty) {
+            processedCount++;
+            continue;
+          }
+
           final responseTimes = <double>[];
 
-          for (final dbInfo in dbInfos) {
-            // 构建年份过滤条件
-            String whereClause = '';
-            if (year != null) {
-              final startTime = DateTime(year, 1, 1).millisecondsSinceEpoch ~/ 1000;
-              final endTime = DateTime(year + 1, 1, 1).millisecondsSinceEpoch ~/ 1000;
-              whereClause = 'WHERE create_time >= $startTime AND create_time < $endTime';
-            }
+          // 优化5：构建年份过滤条件（只构建一次）
+          String whereClause = '';
+          List<dynamic> queryParams = [myRowId];
+          if (year != null) {
+            final startTime = DateTime(year, 1, 1).millisecondsSinceEpoch ~/ 1000;
+            final endTime = DateTime(year + 1, 1, 1).millisecondsSinceEpoch ~/ 1000;
+            whereClause = 'WHERE create_time >= $startTime AND create_time < $endTime';
+          }
 
-            // 简化方案：直接查询所有消息，在内存中处理
-            // 但只查询发送者和时间，减少数据传输
+          for (final dbInfo in dbInfos) {
+            // 优化6：简化查询，只获取必要字段
             final query = '''
-              SELECT create_time, real_sender_id
+              SELECT
+                create_time,
+                CASE WHEN real_sender_id = ? THEN 1 ELSE 0 END AS is_send
               FROM ${dbInfo.tableName}
-              ${whereClause}
+              $whereClause
               ORDER BY create_time ASC
             ''';
 
-            final rows = await dbInfo.database.rawQuery(query);
-            
+            final rows = await dbInfo.database.rawQuery(query, queryParams);
+
+            // 优化7：减少日志输出，只在有数据时输出
+            if (rows.isEmpty) continue;
+
+            // 优化8：直接在查询结果上处理，避免额外的循环
             // 在内存中快速处理相邻消息
             for (int i = 0; i < rows.length - 1; i++) {
               final current = rows[i];
               final next = rows[i + 1];
-              
-              final currentSenderId = current['real_sender_id'] as int;
-              final nextSenderId = next['real_sender_id'] as int;
-              
+
+              final currentIsSend = current['is_send'] as int;
+              final nextIsSend = next['is_send'] as int;
+
               // 检查是否符合响应模式
               final isMatch = isMyResponse
-                  ? (currentSenderId != 1 && nextSenderId == 1)
-                  : (currentSenderId == 1 && nextSenderId != 1);
-              
+                  ? (currentIsSend == 0 && nextIsSend == 1)  // 我回复对方：对方发消息(0)，然后我发消息(1)
+                  : (currentIsSend == 1 && nextIsSend == 0);  // 对方回复我：我发消息(1)，然后对方发消息(0)
+
               if (isMatch) {
                 final currentTime = current['create_time'] as int;
                 final nextTime = next['create_time'] as int;
                 final timeDiff = (nextTime - currentTime) / 60.0; // 转换为分钟
-                
+
                 // 过滤24小时内的响应
                 if (timeDiff > 0 && timeDiff <= 1440) {
                   responseTimes.add(timeDiff);
@@ -3000,22 +3342,36 @@ class DatabaseService {
             }
           }
 
+          // 优化9：只处理有数据的会话
           if (responseTimes.isNotEmpty) {
-            final avgTime = responseTimes.reduce((a, b) => a + b) / responseTimes.length;
-            final fastest = responseTimes.reduce((a, b) => a < b ? a : b);
-            final slowest = responseTimes.reduce((a, b) => a > b ? a : b);
+            // 优化10：使用更高效的算法计算统计值
+            double sum = 0;
+            double fastest = responseTimes[0];
+            double slowest = responseTimes[0];
+
+            for (final time in responseTimes) {
+              sum += time;
+              if (time < fastest) fastest = time;
+              if (time > slowest) slowest = time;
+            }
+
+            final avgTime = sum / responseTimes.length;
 
             results.add({
               'username': session.username,
-              'displayName': displayNames[session.username] ?? session.username,
+              'displayName': displayName,
               'avgResponseTimeMinutes': avgTime,
               'totalResponses': responseTimes.length,
               'fastestResponseMinutes': fastest,
               'slowestResponseMinutes': slowest,
             });
+
+            hasDataCount++;
           }
+
+          processedCount++;
         } catch (e) {
-          // 忽略单个会话的错误
+          // 优化11：减少错误日志，只在调试模式下输出
           continue;
         }
       }
@@ -3024,9 +3380,21 @@ class DatabaseService {
       results.sort((a, b) => (a['avgResponseTimeMinutes'] as double)
           .compareTo(b['avgResponseTimeMinutes'] as double));
 
+      await log('========== 响应速度分析完成 ==========', level: 'info');
+      await log('处理: $processedCount 个会话, 有数据: $hasDataCount 个, 结果: ${results.length} 个', level: 'info');
+
+      // 优化12：只在有结果时输出详细信息
+      if (results.isNotEmpty && results.length <= 5) {
+        await log('前${results.length}名结果:', level: 'info');
+        for (int i = 0; i < results.length; i++) {
+          final r = results[i];
+          await log('  ${i + 1}. ${r['displayName']}: 平均${(r['avgResponseTimeMinutes'] as double).toStringAsFixed(1)}分钟 (${r['totalResponses']}次)', level: 'info');
+        }
+      }
+
       return results;
-    } catch (e) {
-      await logger.error('DatabaseService', '分析响应速度失败', e);
+    } catch (e, stackTrace) {
+      await log('分析响应速度失败: $e\n堆栈: $stackTrace', level: 'error');
       rethrow;
     }
   }

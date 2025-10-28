@@ -6,6 +6,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../services/database_service.dart';
 import '../services/advanced_analytics_service.dart';
 import '../services/response_time_analyzer.dart';
+import '../services/former_friend_analyzer.dart';
 import '../services/logger_service.dart';
 import '../models/advanced_analytics_data.dart';
 
@@ -226,8 +227,12 @@ class AnalyticsBackgroundService {
   }) async {
     ReceivePort? receivePort;
     try {
-      await logger.info('RunAnalysis', '开始准备Isolate任务: $analysisType');
-      
+      await logger.debug('RunAnalysis', '========== 开始分析任务 ==========');
+      await logger.debug('RunAnalysis', '任务类型: $analysisType');
+      await logger.debug('RunAnalysis', '过滤年份: ${filterYear ?? "全部"}');
+      await logger.debug('RunAnalysis', '过滤用户: ${filterUsername ?? "全部"}');
+      await logger.debug('RunAnalysis', '数据库路径: $dbPath');
+
       receivePort = ReceivePort();
       final task = _AnalyticsTask(
         dbPath: dbPath,
@@ -238,34 +243,35 @@ class AnalyticsBackgroundService {
         rootIsolateToken: ServicesBinding.rootIsolateToken!,
       );
 
-      await logger.info('RunAnalysis', '准备启动Isolate: $analysisType');
-      
+      await logger.debug('RunAnalysis', '准备启动Isolate: $analysisType');
+
       // 添加错误和退出监听
       final errorPort = ReceivePort();
       final exitPort = ReceivePort();
-      
+
       // 启动 Isolate
+      final startTime = DateTime.now();
       final isolate = await Isolate.spawn(
-        _analyzeInIsolate, 
-        task, 
+        _analyzeInIsolate,
+        task,
         debugName: 'Analytics-$analysisType',
         onError: errorPort.sendPort,
         onExit: exitPort.sendPort,
       );
-      
-      await logger.info('RunAnalysis', 'Isolate已启动: $analysisType, ID: ${isolate.debugName}');
-      
+
+      await logger.debug('RunAnalysis', 'Isolate已启动: $analysisType, ID: ${isolate.debugName}');
+
       // 监听错误
       errorPort.listen((errorData) async {
         await logger.error('RunAnalysis', 'Isolate错误: $analysisType', errorData);
       });
-      
+
       // 监听退出
       exitPort.listen((exitData) async {
-        await logger.info('RunAnalysis', 'Isolate退出: $analysisType, 退出数据: $exitData');
+        await logger.debug('RunAnalysis', 'Isolate退出: $analysisType, 退出数据: $exitData');
       });
-      
-      await logger.info('RunAnalysis', '开始监听消息: $analysisType');
+
+      await logger.debug('RunAnalysis', '开始监听消息: $analysisType');
 
       // 监听进度消息
       dynamic result;
@@ -273,7 +279,7 @@ class AnalyticsBackgroundService {
       await for (final message in receivePort) {
         messageCount++;
         await logger.debug('RunAnalysis', '收到消息 #$messageCount: $analysisType, 类型: ${message.runtimeType}');
-        
+
         if (message is _AnalyticsMessage) {
           if (message.type == 'log') {
             final logMsg = message.logMessage ?? '';
@@ -292,21 +298,24 @@ class AnalyticsBackgroundService {
                 await logger.info('Isolate-$analysisType', logMsg);
             }
           } else if (message.type == 'progress') {
+            await logger.debug('RunAnalysis', '进度更新: $analysisType - ${message.stage} (${message.current}/${message.total})');
             progressCallback(
-              message.stage ?? '', 
-              message.current ?? 0, 
+              message.stage ?? '',
+              message.current ?? 0,
               message.total ?? 100,
               detail: message.detail,
               elapsedSeconds: message.elapsedSeconds,
               estimatedRemainingSeconds: message.estimatedRemainingSeconds,
             );
           } else if (message.type == 'done') {
-            await logger.info('RunAnalysis', '收到完成消息: $analysisType');
+            final elapsed = DateTime.now().difference(startTime);
+            await logger.info('RunAnalysis', '任务完成: $analysisType, 耗时: ${elapsed.inSeconds}秒');
+            await logger.debug('RunAnalysis', '结果数据类型: ${message.result.runtimeType}');
             result = message.result;
             receivePort.close();
             break;
           } else if (message.type == 'error') {
-            await logger.error('RunAnalysis', '收到错误消息: $analysisType, 错误: ${message.error}');
+            await logger.error('RunAnalysis', '任务失败: $analysisType, 错误: ${message.error}');
             receivePort.close();
             throw Exception(message.error);
           }
@@ -315,12 +324,13 @@ class AnalyticsBackgroundService {
         }
       }
 
-      await logger.info('RunAnalysis', '消息监听结束: $analysisType, 共收到 $messageCount 条消息');
-      
+      await logger.debug('RunAnalysis', '消息监听结束: $analysisType, 共收到 $messageCount 条消息');
+      await logger.debug('RunAnalysis', '========== 任务完成 ==========');
+
       // 清理监听
       errorPort.close();
       exitPort.close();
-      
+
       return result;
     } catch (e) {
       await logger.error('RunAnalysis', '捕获异常: $analysisType, 错误: $e');
@@ -349,14 +359,17 @@ class AnalyticsBackgroundService {
 
       DatabaseService? dbService;
       try {
-        sendLog('开始执行任务: ${task.analysisType}, filterYear: ${task.filterYear}');
+        sendLog('========== Isolate任务开始 ==========', level: 'debug');
+        sendLog('任务类型: ${task.analysisType}', level: 'debug');
+        sendLog('过滤年份: ${task.filterYear ?? "全部"}', level: 'debug');
+        sendLog('数据库路径: ${task.dbPath}', level: 'debug');
 
         // 不需要初始化 BackgroundIsolateBinaryMessenger，因为我们不使用平台通道
         // 避免在release模式下stdout写入导致的错误
-        sendLog('跳过 BackgroundIsolateBinaryMessenger 初始化（Isolate中不需要）');
+        sendLog('跳过 BackgroundIsolateBinaryMessenger 初始化（Isolate中不需要）', level: 'debug');
 
           sqfliteFfiInit();
-          sendLog('sqflite_ffi 初始化完成');
+          sendLog('sqflite_ffi 初始化完成', level: 'debug');
 
           final startTime = DateTime.now();
 
@@ -369,10 +382,10 @@ class AnalyticsBackgroundService {
             estimatedRemainingSeconds: 60,
           ));
 
-          sendLog('创建 DatabaseService');
+          sendLog('创建 DatabaseService', level: 'debug');
           dbService = DatabaseService();
 
-          sendLog('初始化 DatabaseService');
+          sendLog('初始化 DatabaseService', level: 'debug');
           await dbService.initialize(factory: databaseFactoryFfi).timeout(
             const Duration(seconds: 30),
             onTimeout: () {
@@ -380,10 +393,9 @@ class AnalyticsBackgroundService {
               throw TimeoutException('初始化 DatabaseService 超时');
             },
           );
-          sendLog('DatabaseService 初始化完成');
+          sendLog('DatabaseService 初始化完成', level: 'debug');
 
-          sendLog('开始连接数据库: ${task.dbPath}');
-          sendLog('即将调用 connectDecryptedDatabase');
+          sendLog('开始连接数据库: ${task.dbPath}', level: 'debug');
           try {
             await dbService.connectDecryptedDatabase(task.dbPath, factory: databaseFactoryFfi).timeout(
               const Duration(seconds: 30),
@@ -392,12 +404,11 @@ class AnalyticsBackgroundService {
                 throw TimeoutException('连接数据库超时，可能数据库文件被占用');
               },
             );
-            sendLog('connectDecryptedDatabase 调用返回');
+            sendLog('数据库连接成功', level: 'debug');
           } catch (e) {
-            sendLog('connectDecryptedDatabase 调用失败: $e', level: 'error');
+            sendLog('数据库连接失败: $e', level: 'error');
             rethrow;
           }
-          sendLog('数据库连接成功');
 
           task.sendPort.send(_AnalyticsMessage(
             type: 'progress',
@@ -408,18 +419,19 @@ class AnalyticsBackgroundService {
             estimatedRemainingSeconds: _estimateRemainingTime(30, 100, startTime),
           ));
 
-          sendLog('创建 AdvancedAnalyticsService');
+          sendLog('创建 AdvancedAnalyticsService', level: 'debug');
           final analyticsService = AdvancedAnalyticsService(dbService);
           if (task.filterYear != null) {
             analyticsService.setYearFilter(task.filterYear);
-            sendLog('设置年份过滤: ${task.filterYear}');
+            sendLog('设置年份过滤: ${task.filterYear}', level: 'debug');
           }
 
           dynamic result;
-          sendLog('开始执行分析类型: ${task.analysisType}');
+          sendLog('开始执行分析: ${task.analysisType}', level: 'debug');
 
           switch (task.analysisType) {
             case 'activity':
+              sendLog('开始分析作息规律', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在分析作息规律...',
@@ -429,35 +441,12 @@ class AnalyticsBackgroundService {
                 estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
               ));
               final data = await analyticsService.analyzeActivityPattern();
+              sendLog('作息规律分析完成，最大值: ${data.maxCount}', level: 'debug');
               result = data.toJson();
-              break;
-
-            case 'linguistic':
-              task.sendPort.send(_AnalyticsMessage(
-                type: 'progress',
-                stage: '正在分析语言风格...',
-                current: 50,
-                total: 100,
-                elapsedSeconds: DateTime.now().difference(startTime).inSeconds,
-                estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
-              ));
-              final data = await analyticsService.analyzeLinguisticStyle();
-              result = data.toJson();
-              break;
-
-            case 'haha':
-              task.sendPort.send(_AnalyticsMessage(
-                type: 'progress',
-                stage: '正在统计快乐指数...',
-                current: 50,
-                total: 100,
-                elapsedSeconds: DateTime.now().difference(startTime).inSeconds,
-                estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
-              ));
-              result = await analyticsService.analyzeHahaReport();
               break;
 
             case 'midnight':
+              sendLog('开始寻找深夜密谈之王', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在寻找深夜密谈之王...',
@@ -467,61 +456,24 @@ class AnalyticsBackgroundService {
                 estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
               ));
               result = await analyticsService.findMidnightChatKing();
-              break;
-
-            case 'intimacy':
-              task.sendPort.send(_AnalyticsMessage(
-                type: 'progress',
-                stage: '正在生成亲密度日历...',
-                current: 50,
-                total: 100,
-                elapsedSeconds: DateTime.now().difference(startTime).inSeconds,
-                estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
-              ));
-              final data = await analyticsService.generateIntimacyCalendar(task.filterUsername!);
-              // 转换 DateTime 为 String 以便传递
-              result = {
-                'username': data.username,
-                'dailyMessages': data.dailyMessages.map((k, v) => MapEntry(k.toIso8601String(), v)),
-                'startDate': data.startDate.toIso8601String(),
-                'endDate': data.endDate.toIso8601String(),
-                'maxDailyCount': data.maxDailyCount,
-              };
-              break;
-
-            case 'balance':
-              task.sendPort.send(_AnalyticsMessage(
-                type: 'progress',
-                stage: '正在分析对话天平...',
-                current: 50,
-                total: 100,
-                elapsedSeconds: DateTime.now().difference(startTime).inSeconds,
-                estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
-              ));
-              final data = await analyticsService.analyzeConversationBalance(task.filterUsername!);
-              result = {
-                'username': data.username,
-                'sentCount': data.sentCount,
-                'receivedCount': data.receivedCount,
-                'sentWords': data.sentWords,
-                'receivedWords': data.receivedWords,
-                'initiatedByMe': data.initiatedByMe,
-                'initiatedByOther': data.initiatedByOther,
-                'conversationSegments': data.conversationSegments,
-                'segmentsInitiatedByMe': data.segmentsInitiatedByMe,
-                'segmentsInitiatedByOther': data.segmentsInitiatedByOther,
-              };
+              sendLog('深夜密谈之王分析完成', level: 'debug');
               break;
 
             case 'who_replies_fastest':
+              sendLog('========== 开始分析谁回复最快 ==========', level: 'debug');
+              sendLog('创建 ResponseTimeAnalyzer', level: 'debug');
               final analyzer = ResponseTimeAnalyzer(dbService);
               if (task.filterYear != null) {
                 analyzer.setYearFilter(task.filterYear);
+                sendLog('设置年份过滤: ${task.filterYear}', level: 'debug');
               }
-              
+
+              sendLog('调用 analyzeWhoRepliesFastest', level: 'debug');
+              final analysisStartTime = DateTime.now();
               final results = await analyzer.analyzeWhoRepliesFastest(
                 onProgress: (current, total, username) {
                   final elapsed = DateTime.now().difference(startTime).inSeconds;
+                  sendLog('分析进度: $current/$total, 当前用户: $username', level: 'debug');
                   task.sendPort.send(_AnalyticsMessage(
                     type: 'progress',
                     stage: '正在分析响应速度...',
@@ -532,22 +484,53 @@ class AnalyticsBackgroundService {
                     estimatedRemainingSeconds: _estimateRemainingTime(current, total, startTime),
                   ));
                 },
+                onLog: (message, {String level = 'info'}) {
+                  sendLog(message, level: level);
+                },
               );
-              
+              final analysisElapsed = DateTime.now().difference(analysisStartTime);
+              sendLog('analyzeWhoRepliesFastest 完成，耗时: ${analysisElapsed.inSeconds}秒', level: 'debug');
+
+              sendLog('谁回复最快分析完成，找到 ${results.length} 个结果', level: 'info');
+              if (results.isNotEmpty) {
+                sendLog('前3名结果:', level: 'info');
+                for (int i = 0; i < results.length && i < 3; i++) {
+                  final r = results[i];
+                  sendLog('  ${i + 1}. ${r.displayName}: 平均${r.avgResponseTimeMinutes.toStringAsFixed(1)}分钟 (${r.totalResponses}次)', level: 'info');
+                }
+              } else {
+                sendLog('警告：分析完成但没有找到任何结果！', level: 'warning');
+                sendLog('可能原因：', level: 'warning');
+                sendLog('  1. 没有私聊会话', level: 'warning');
+                sendLog('  2. 所有会话都没有找到响应模式', level: 'warning');
+                sendLog('  3. 所有响应时间都超过24小时', level: 'warning');
+              }
+
+              sendLog('转换结果为 JSON', level: 'debug');
+              final jsonResults = results.map((r) => r.toJson()).toList();
+              sendLog('JSON 结果数量: ${jsonResults.length}', level: 'debug');
+
               result = {
-                'results': results.map((r) => r.toJson()).toList(),
+                'results': jsonResults,
               };
+              sendLog('========== 谁回复最快分析完成 ==========', level: 'debug');
               break;
 
             case 'my_fastest_replies':
-              final analyzer = ResponseTimeAnalyzer(dbService);
+              sendLog('========== 开始分析我回复最快 ==========', level: 'debug');
+              sendLog('创建 ResponseTimeAnalyzer', level: 'debug');
+              final analyzer2 = ResponseTimeAnalyzer(dbService);
               if (task.filterYear != null) {
-                analyzer.setYearFilter(task.filterYear);
+                analyzer2.setYearFilter(task.filterYear);
+                sendLog('设置年份过滤: ${task.filterYear}', level: 'debug');
               }
-              
-              final results = await analyzer.analyzeMyFastestReplies(
+
+              sendLog('调用 analyzeMyFastestReplies', level: 'debug');
+              final analysisStartTime2 = DateTime.now();
+              final results2 = await analyzer2.analyzeMyFastestReplies(
                 onProgress: (current, total, username) {
                   final elapsed = DateTime.now().difference(startTime).inSeconds;
+                  sendLog('分析进度: $current/$total, 当前用户: $username', level: 'debug');
                   task.sendPort.send(_AnalyticsMessage(
                     type: 'progress',
                     stage: '正在分析我的响应速度...',
@@ -558,14 +541,99 @@ class AnalyticsBackgroundService {
                     estimatedRemainingSeconds: _estimateRemainingTime(current, total, startTime),
                   ));
                 },
+                onLog: (message, {String level = 'info'}) {
+                  sendLog(message, level: level);
+                },
               );
-              
+              final analysisElapsed2 = DateTime.now().difference(analysisStartTime2);
+              sendLog('analyzeMyFastestReplies 完成，耗时: ${analysisElapsed2.inSeconds}秒', level: 'debug');
+
+              sendLog('我回复最快分析完成，找到 ${results2.length} 个结果', level: 'info');
+              if (results2.isNotEmpty) {
+                sendLog('前3名结果:', level: 'info');
+                for (int i = 0; i < results2.length && i < 3; i++) {
+                  final r = results2[i];
+                  sendLog('  ${i + 1}. ${r.displayName}: 平均${r.avgResponseTimeMinutes.toStringAsFixed(1)}分钟 (${r.totalResponses}次)', level: 'info');
+                }
+              } else {
+                sendLog('警告：分析完成但没有找到任何结果！', level: 'warning');
+                sendLog('可能原因：', level: 'warning');
+                sendLog('  1. 没有私聊会话', level: 'warning');
+                sendLog('  2. 所有会话都没有找到响应模式', level: 'warning');
+                sendLog('  3. 所有响应时间都超过24小时', level: 'warning');
+              }
+
+              sendLog('转换结果为 JSON', level: 'debug');
+              final jsonResults2 = results2.map((r) => r.toJson()).toList();
+              sendLog('JSON 结果数量: ${jsonResults2.length}', level: 'debug');
+
               result = {
-                'results': results.map((r) => r.toJson()).toList(),
+                'results': jsonResults2,
               };
+              sendLog('========== 我回复最快分析完成 ==========', level: 'debug');
+              break;
+
+            case 'former_friends':
+              sendLog('========== 开始分析曾经的好朋友 ==========', level: 'debug');
+              sendLog('创建 FormerFriendAnalyzer', level: 'debug');
+              final formerFriendAnalyzer = FormerFriendAnalyzer(dbService);
+              if (task.filterYear != null) {
+                formerFriendAnalyzer.setYearFilter(task.filterYear);
+                sendLog('设置年份过滤: ${task.filterYear}', level: 'debug');
+              }
+
+              sendLog('调用 analyzeFormerFriends', level: 'debug');
+              final formerFriendsStartTime = DateTime.now();
+              final formerFriendsData = await formerFriendAnalyzer.analyzeFormerFriends(
+                onProgress: (current, total, username) {
+                  final elapsed = DateTime.now().difference(startTime).inSeconds;
+                  sendLog('分析进度: $current/$total, 当前用户: $username', level: 'debug');
+                  task.sendPort.send(_AnalyticsMessage(
+                    type: 'progress',
+                    stage: '正在分析曾经的好朋友...',
+                    current: current,
+                    total: total,
+                    detail: username,
+                    elapsedSeconds: elapsed,
+                    estimatedRemainingSeconds: _estimateRemainingTime(current, total, startTime),
+                  ));
+                },
+                onLog: (message, {String level = 'info'}) {
+                  sendLog(message, level: level);
+                },
+              );
+              final formerFriendsElapsed = DateTime.now().difference(formerFriendsStartTime);
+              sendLog('analyzeFormerFriends 完成，耗时: ${formerFriendsElapsed.inSeconds}秒', level: 'debug');
+
+              final formerFriendsResults = formerFriendsData['results'] as List<FormerFriendResult>;
+              final stats = formerFriendsData['stats'] as Map<String, dynamic>;
+
+              sendLog('曾经的好朋友分析完成，找到 ${formerFriendsResults.length} 个结果', level: 'info');
+              sendLog('统计: ${stats.toString()}', level: 'info');
+
+              if (formerFriendsResults.isNotEmpty) {
+                sendLog('前3名结果:', level: 'info');
+                for (int i = 0; i < formerFriendsResults.length && i < 3; i++) {
+                  final r = formerFriendsResults[i];
+                  sendLog('  ${i + 1}. ${r.displayName}: 活跃期${r.activeDays}天, 已${r.daysSinceActive}天未联系', level: 'info');
+                }
+              } else {
+                sendLog('警告：分析完成但没有找到任何结果！', level: 'warning');
+              }
+
+              sendLog('转换结果为 JSON', level: 'debug');
+              final formerFriendsJson = formerFriendsResults.map((r) => r.toJson()).toList();
+              sendLog('JSON 结果数量: ${formerFriendsJson.length}', level: 'debug');
+
+              result = {
+                'results': formerFriendsJson,
+                'stats': stats,
+              };
+              sendLog('========== 曾经的好朋友分析完成 ==========', level: 'debug');
               break;
 
             case 'absoluteCoreFriends':
+              sendLog('开始统计绝对核心好友', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在统计绝对核心好友...',
@@ -576,6 +644,7 @@ class AnalyticsBackgroundService {
               ));
               // 获取所有好友统计以计算总数
               final allCoreFriends = await analyticsService.getAbsoluteCoreFriends(999999);
+              sendLog('获取到 ${allCoreFriends.length} 个好友', level: 'debug');
               // 只取前3名用于展示
               final top3 = allCoreFriends.take(3).toList();
               // 计算总消息数和总好友数
@@ -583,6 +652,7 @@ class AnalyticsBackgroundService {
               for (var friend in allCoreFriends) {
                 totalMessages += friend.count;
               }
+              sendLog('绝对核心好友统计完成，总消息数: $totalMessages', level: 'debug');
               result = {
                 'top3': top3.map((e) => e.toJson()).toList(),
                 'totalMessages': totalMessages,
@@ -591,6 +661,7 @@ class AnalyticsBackgroundService {
               break;
 
             case 'confidantObjects':
+              sendLog('开始统计年度倾诉对象', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在统计年度倾诉对象...',
@@ -600,10 +671,12 @@ class AnalyticsBackgroundService {
                 estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
               ));
               final confidants = await analyticsService.getConfidantObjects(3);
+              sendLog('年度倾诉对象统计完成，找到 ${confidants.length} 个', level: 'debug');
               result = confidants.map((e) => e.toJson()).toList();
               break;
 
             case 'bestListeners':
+              sendLog('开始统计年度最佳听众', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在统计年度最佳听众...',
@@ -613,10 +686,12 @@ class AnalyticsBackgroundService {
                 estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
               ));
               final listeners = await analyticsService.getBestListeners(3);
+              sendLog('年度最佳听众统计完成，找到 ${listeners.length} 个', level: 'debug');
               result = listeners.map((e) => e.toJson()).toList();
               break;
 
             case 'mutualFriends':
+              sendLog('开始统计双向奔赴好友', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在统计双向奔赴好友...',
@@ -626,10 +701,12 @@ class AnalyticsBackgroundService {
                 estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
               ));
               final mutual = await analyticsService.getMutualFriendsRanking(3);
+              sendLog('双向奔赴好友统计完成，找到 ${mutual.length} 个', level: 'debug');
               result = mutual.map((e) => e.toJson()).toList();
               break;
 
             case 'socialInitiative':
+              sendLog('开始分析主动社交指数', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在分析主动社交指数...',
@@ -639,10 +716,12 @@ class AnalyticsBackgroundService {
                 estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
               ));
               final socialStyle = await analyticsService.analyzeSocialInitiativeRate();
+              sendLog('主动社交指数分析完成', level: 'debug');
               result = socialStyle.toJson();
               break;
 
             case 'peakChatDay':
+              sendLog('开始统计聊天巅峰日', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在统计聊天巅峰日...',
@@ -652,10 +731,12 @@ class AnalyticsBackgroundService {
                 estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
               ));
               final peakDay = await analyticsService.analyzePeakChatDay();
+              sendLog('聊天巅峰日统计完成', level: 'debug');
               result = peakDay.toJson();
               break;
 
             case 'longestCheckIn':
+              sendLog('开始统计连续打卡记录', level: 'debug');
               task.sendPort.send(_AnalyticsMessage(
                 type: 'progress',
                 stage: '正在统计连续打卡记录...',
@@ -665,6 +746,7 @@ class AnalyticsBackgroundService {
                 estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
               ));
               final checkIn = await analyticsService.findLongestCheckInRecord();
+              sendLog('连续打卡记录统计完成，最长: ${checkIn['days']} 天', level: 'debug');
               result = {
                 'username': checkIn['username'],
                 'displayName': checkIn['displayName'],
@@ -674,52 +756,28 @@ class AnalyticsBackgroundService {
               };
               break;
 
-            case 'messageTypes':
-              task.sendPort.send(_AnalyticsMessage(
-                type: 'progress',
-                stage: '正在统计消息类型分布...',
-                current: 50,
-                total: 100,
-                elapsedSeconds: DateTime.now().difference(startTime).inSeconds,
-                estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
-              ));
-              final typeStats = await analyticsService.analyzeMessageTypeDistribution();
-              result = typeStats.map((e) => e.toJson()).toList();
-              break;
-
-            case 'messageLength':
-              task.sendPort.send(_AnalyticsMessage(
-                type: 'progress',
-                stage: '正在分析消息长度...',
-                current: 50,
-                total: 100,
-                elapsedSeconds: DateTime.now().difference(startTime).inSeconds,
-                estimatedRemainingSeconds: _estimateRemainingTime(50, 100, startTime),
-              ));
-              final lengthData = await analyticsService.analyzeMessageLength();
-              result = lengthData.toJson();
-              break;
-
             default:
+              sendLog('未知的分析类型: ${task.analysisType}', level: 'error');
               throw Exception('未知的分析类型: ${task.analysisType}');
           }
 
-          sendLog('分析完成，准备发送结果');
+          final elapsed = DateTime.now().difference(startTime);
+          sendLog('分析完成，总耗时: ${elapsed.inSeconds}秒', level: 'debug');
           task.sendPort.send(_AnalyticsMessage(
             type: 'progress',
             stage: '分析完成',
             current: 100,
             total: 100,
-            elapsedSeconds: DateTime.now().difference(startTime).inSeconds,
+            elapsedSeconds: elapsed.inSeconds,
             estimatedRemainingSeconds: 0,
           ));
 
-          sendLog('发送完成消息');
+          sendLog('发送完成消息', level: 'debug');
           task.sendPort.send(_AnalyticsMessage(
             type: 'done',
             result: result,
           ));
-          sendLog('任务完成: ${task.analysisType}');
+          sendLog('========== Isolate任务完成 ==========', level: 'debug');
         } catch (e, stackTrace) {
           task.sendPort.send(_AnalyticsMessage(
             type: 'error',
@@ -728,17 +786,17 @@ class AnalyticsBackgroundService {
           sendLog('任务失败: ${task.analysisType}, 错误: $e', level: 'error');
           sendLog('堆栈: $stackTrace', level: 'error');
         } finally {
-          sendLog('开始清理资源');
+          sendLog('开始清理资源', level: 'debug');
           if (dbService != null) {
             try {
-              sendLog('关闭数据库连接');
+              sendLog('关闭数据库连接', level: 'debug');
               await dbService.close();
-              sendLog('数据库连接已关闭');
+              sendLog('数据库连接已关闭', level: 'debug');
             } catch (e) {
               sendLog('关闭数据库失败: $e', level: 'error');
             }
           }
-          sendLog('Isolate 退出: ${task.analysisType}');
+          sendLog('Isolate 退出: ${task.analysisType}', level: 'debug');
         }
     }, (error, stackTrace) {
       task.sendPort.send(_AnalyticsMessage(
@@ -908,16 +966,33 @@ class AnalyticsBackgroundService {
     return MessageLengthData.fromJson(result);
   }
 
+  /// 曾经的好朋友分析（后台版本）
+  Future<Map<String, dynamic>> analyzeFormerFriendsInBackground(
+    int? filterYear,
+    AnalyticsProgressCallback progressCallback,
+  ) async {
+    final result = await _runAnalysisInIsolate(
+      analysisType: 'former_friends',
+      filterYear: filterYear,
+      progressCallback: progressCallback,
+    );
+    return {
+      'results': (result['results'] as List).cast<Map<String, dynamic>>(),
+      'stats': result['stats'] as Map<String, dynamic>,
+    };
+  }
+
   /// 生成完整年度报告（并行执行所有任务）
   Future<Map<String, dynamic>> generateFullAnnualReport(
     int? filterYear,
     void Function(String taskName, String status, int progress) progressCallback,
   ) async {
+    await logger.debug('AnnualReport', '========== 开始生成年度报告 ==========');
     await logger.info('AnnualReport', '开始生成年度报告, filterYear: $filterYear, dbPath: $dbPath');
-    
+
     final taskProgress = <String, int>{};
     final taskStatus = <String, String>{};
-    
+
     // 初始化任务状态
     final taskNames = [
       '绝对核心好友',
@@ -931,13 +1006,15 @@ class AnalyticsBackgroundService {
       '深夜密友',
       '最快响应好友',
       '我回复最快',
+      '曾经的好朋友',
     ];
-    
-    await logger.info('AnnualReport', '初始化 ${taskNames.length} 个任务');
+
+    await logger.debug('AnnualReport', '初始化 ${taskNames.length} 个任务');
     for (final name in taskNames) {
       taskProgress[name] = 0;
       taskStatus[name] = '等待中';
     }
+    await logger.debug('AnnualReport', '任务列表: ${taskNames.join(", ")}');
     
     // 创建进度回调包装器
     AnalyticsProgressCallback createProgressCallback(String taskName) {
@@ -951,16 +1028,18 @@ class AnalyticsBackgroundService {
       }) {
         taskProgress[taskName] = (current / total * 100).toInt();
         taskStatus[taskName] = current >= total ? '已完成' : '进行中';
-        
+
         // 计算总体进度
         final totalProgress = taskProgress.values.reduce((a, b) => a + b) ~/ taskNames.length;
+        logger.debug('AnnualReport', '任务进度: $taskName - $stage ($current/$total), 总进度: $totalProgress%');
         progressCallback(taskName, taskStatus[taskName]!, totalProgress);
       };
     }
-    
+
     // 串行执行所有任务，避免数据库锁定（一次只执行一个Isolate）
     // 每个任务都有5分钟超时保护
     final timeout = const Duration(minutes: 5);
+    await logger.debug('AnnualReport', '任务超时设置: ${timeout.inMinutes} 分钟');
     
     await logger.info('AnnualReport', '开始任务 1/11: 绝对核心好友');
     final coreFriendsData = await getAbsoluteCoreFriendsInBackground(
@@ -1062,7 +1141,7 @@ class AnalyticsBackgroundService {
     });
     await logger.info('AnnualReport', '完成任务 10/11: 最快响应好友');
     
-    await logger.info('AnnualReport', '开始任务 11/11: 我回复最快');
+    await logger.info('AnnualReport', '开始任务 11/12: 我回复最快');
     final myFastestReplies = await analyzeMyFastestRepliesInBackground(
       filterYear,
       createProgressCallback('我回复最快'),
@@ -1070,11 +1149,45 @@ class AnalyticsBackgroundService {
       logger.error('AnnualReport', '任务超时: 我回复最快');
       throw TimeoutException('分析我回复最快超时，可能因为好友数量过多');
     });
-    await logger.info('AnnualReport', '完成任务 11/11: 我回复最快');
-    
+    await logger.info('AnnualReport', '完成任务 11/12: 我回复最快');
+
+    await logger.info('AnnualReport', '开始任务 12/12: 曾经的好朋友');
+    final formerFriendsData = await analyzeFormerFriendsInBackground(
+      filterYear,
+      createProgressCallback('曾经的好朋友'),
+    ).timeout(timeout, onTimeout: () {
+      logger.error('AnnualReport', '任务超时: 曾经的好朋友');
+      throw TimeoutException('分析曾经的好朋友超时');
+    });
+    await logger.info('AnnualReport', '完成任务 12/12: 曾经的好朋友');
+
+    final formerFriends = formerFriendsData['results'] as List<Map<String, dynamic>>;
+    final formerFriendsStats = formerFriendsData['stats'] as Map<String, dynamic>;
+
     // 组装结果
-    await logger.info('AnnualReport', '所有任务完成，开始组装结果');
-    return {
+    await logger.debug('AnnualReport', '所有任务完成，开始组装结果');
+    await logger.debug('AnnualReport', '核心好友数: ${(coreFriendsData['top3'] as List).length}');
+    await logger.debug('AnnualReport', '总消息数: ${coreFriendsData['totalMessages']}');
+    await logger.debug('AnnualReport', '总好友数: ${coreFriendsData['totalFriends']}');
+    await logger.debug('AnnualReport', '倾诉对象数: ${confidant.length}');
+    await logger.debug('AnnualReport', '最佳听众数: ${listeners.length}');
+    await logger.debug('AnnualReport', '双向奔赴好友数: ${mutualFriends.length}');
+    await logger.debug('AnnualReport', '最快响应好友数: ${whoRepliesFastest.length}');
+    await logger.debug('AnnualReport', '我回复最快好友数: ${myFastestReplies.length}');
+
+    // 响应速度数据已经是 List<Map<String, dynamic>> 格式
+    await logger.debug('AnnualReport', '响应速度数据类型检查:');
+    await logger.debug('AnnualReport', '  whoRepliesFastest: ${whoRepliesFastest.runtimeType}, 长度: ${whoRepliesFastest.length}');
+    await logger.debug('AnnualReport', '  myFastestReplies: ${myFastestReplies.runtimeType}, 长度: ${myFastestReplies.length}');
+
+    if (whoRepliesFastest.isNotEmpty) {
+      await logger.debug('AnnualReport', '  whoRepliesFastest[0]: ${whoRepliesFastest[0]}');
+    }
+    if (myFastestReplies.isNotEmpty) {
+      await logger.debug('AnnualReport', '  myFastestReplies[0]: ${myFastestReplies[0]}');
+    }
+
+    final result = {
       'coreFriends': (coreFriendsData['top3'] as List<FriendshipRanking>).map((e) => e.toJson()).toList(),
       'totalMessages': coreFriendsData['totalMessages'],
       'totalFriends': coreFriendsData['totalFriends'],
@@ -1088,6 +1201,16 @@ class AnalyticsBackgroundService {
       'midnightKing': midnightKing,
       'whoRepliesFastest': whoRepliesFastest,
       'myFastestReplies': myFastestReplies,
+      'formerFriends': formerFriends,
+      'formerFriendsStats': formerFriendsStats,
     };
+
+    await logger.debug('AnnualReport', '最终 result 包含的键: ${result.keys.toList()}');
+    await logger.debug('AnnualReport', '最终 result[whoRepliesFastest]: ${result['whoRepliesFastest'].runtimeType}, 长度: ${(result['whoRepliesFastest'] as List).length}');
+    await logger.debug('AnnualReport', '最终 result[myFastestReplies]: ${result['myFastestReplies'].runtimeType}, 长度: ${(result['myFastestReplies'] as List).length}');
+
+    await logger.info('AnnualReport', '年度报告生成完成');
+    await logger.debug('AnnualReport', '========== 年度报告生成完成 ==========');
+    return result;
   }
 }

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/analytics_service.dart';
 import '../services/database_service.dart';
 import '../services/analytics_cache_service.dart';
+import '../services/logger_service.dart';
 import '../models/analytics_data.dart';
 import 'annual_report_display_page.dart';
 
@@ -45,7 +46,10 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   }
 
   Future<void> _loadData() async {
+    await logger.debug('AnalyticsPage', '========== 开始加载数据分析 ==========');
+
     if (!widget.databaseService.isConnected) {
+      await logger.warning('AnalyticsPage', '数据库未连接');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('请先连接数据库')),
@@ -54,6 +58,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       return;
     }
 
+    await logger.debug('AnalyticsPage', '数据库已连接，开始加载数据');
+
     if (!mounted) return;
     setState(() {
       _isLoading = true;
@@ -61,38 +67,50 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       _processedCount = 0;
       _totalCount = 0;
     });
-    
+
     try {
       final cacheService = AnalyticsCacheService.instance;
-      
+
       // 获取数据库修改时间
       final dbPath = widget.databaseService.dbPath;
+      await logger.debug('AnalyticsPage', '数据库路径: $dbPath');
+
       int? dbModifiedTime;
       if (dbPath != null) {
         final dbFile = File(dbPath);
         if (await dbFile.exists()) {
           final stat = await dbFile.stat();
           dbModifiedTime = stat.modified.millisecondsSinceEpoch;
+          await logger.debug('AnalyticsPage', '数据库修改时间: ${DateTime.fromMillisecondsSinceEpoch(dbModifiedTime)}');
+        } else {
+          await logger.warning('AnalyticsPage', '数据库文件不存在');
         }
       }
-      
+
       // 先尝试从缓存读取
+      await logger.debug('AnalyticsPage', '开始检查缓存');
       final cachedData = await cacheService.loadBasicAnalytics();
+      await logger.debug('AnalyticsPage', '缓存检查完成，有缓存: ${cachedData != null}');
       
       if (cachedData != null && dbModifiedTime != null) {
         // 有缓存，检查数据库是否变化
+        await logger.debug('AnalyticsPage', '检查数据库是否变化');
         final dbChanged = await cacheService.isDatabaseChanged(dbModifiedTime);
-        
+        await logger.debug('AnalyticsPage', '数据库已变化: $dbChanged');
+
         if (dbChanged) {
           // 数据库已变化，询问用户
+          await logger.info('AnalyticsPage', '数据库已变化，询问用户是否重新分析');
           if (!mounted) return;
           final shouldReanalyze = await _showDatabaseChangedDialog();
-          
+
           if (shouldReanalyze == true) {
             // 用户选择重新分析
+            await logger.info('AnalyticsPage', '用户选择重新分析');
             await _performAnalysis(dbModifiedTime);
           } else {
             // 用户选择使用旧数据
+            await logger.info('AnalyticsPage', '用户选择使用旧数据');
             if (!mounted) return;
             setState(() {
               _overallStats = cachedData['overallStats'];
@@ -101,11 +119,13 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
               _loadingStatus = '完成（使用缓存数据）';
               _isLoading = false;
             });
+            await logger.debug('AnalyticsPage', '使用缓存数据完成，总消息数: ${_overallStats?.totalMessages}');
           }
           return;
         }
-        
+
         // 数据库未变化，直接使用缓存
+        await logger.info('AnalyticsPage', '数据库未变化，使用缓存数据');
         if (!mounted) return;
         setState(() {
           _overallStats = cachedData['overallStats'];
@@ -114,12 +134,15 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           _loadingStatus = '完成（从缓存加载）';
           _isLoading = false;
         });
+        await logger.debug('AnalyticsPage', '缓存加载完成，总消息数: ${_overallStats?.totalMessages}, 联系人数: ${_allContactRankings?.length}');
         return;
       }
 
       // 没有缓存，重新分析
+      await logger.info('AnalyticsPage', '没有缓存，开始重新分析');
       await _performAnalysis(dbModifiedTime ?? DateTime.now().millisecondsSinceEpoch);
-    } catch (e) {
+    } catch (e, stackTrace) {
+      await logger.error('AnalyticsPage', '加载数据失败: $e', e, stackTrace);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('加载数据失败: $e')),
@@ -129,38 +152,60 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
       if (mounted) {
         setState(() => _isLoading = false);
       }
+      await logger.debug('AnalyticsPage', '========== 数据加载完成 ==========');
     }
   }
 
   Future<void> _performAnalysis(int dbModifiedTime) async {
+    await logger.debug('AnalyticsPage', '========== 开始执行数据分析 ==========');
     final cacheService = AnalyticsCacheService.instance;
-    
+
     if (!mounted) return;
     setState(() => _loadingStatus = '正在分析所有私聊数据...');
+
+    await logger.debug('AnalyticsPage', '开始分析所有私聊数据');
+    final startTime = DateTime.now();
     final stats = await _analyticsService.analyzeAllPrivateChats();
-    
+    final elapsed = DateTime.now().difference(startTime);
+
+    await logger.info('AnalyticsPage', '私聊数据分析完成，耗时: ${elapsed.inSeconds}秒');
+    await logger.debug('AnalyticsPage', '总消息数: ${stats.totalMessages}');
+    await logger.debug('AnalyticsPage', '活跃天数: ${stats.activeDays}');
+    await logger.debug('AnalyticsPage', '文本消息: ${stats.textMessages}');
+    await logger.debug('AnalyticsPage', '图片消息: ${stats.imageMessages}');
+    await logger.debug('AnalyticsPage', '语音消息: ${stats.voiceMessages}');
+    await logger.debug('AnalyticsPage', '视频消息: ${stats.videoMessages}');
+    await logger.debug('AnalyticsPage', '发送消息: ${stats.sentMessages}');
+    await logger.debug('AnalyticsPage', '接收消息: ${stats.receivedMessages}');
+
     if (!mounted) return;
     setState(() {
       _overallStats = stats;
       _loadingStatus = '正在统计联系人排名...';
     });
-    
+
     // 步骤2: 加载联系人排名（带进度）
+    await logger.debug('AnalyticsPage', '开始加载联系人排名');
     final rankings = await _loadRankingsWithProgress();
-    
+    await logger.info('AnalyticsPage', '联系人排名加载完成，共 ${rankings.length} 个联系人');
+
     // 保存到缓存
+    await logger.debug('AnalyticsPage', '开始保存缓存');
     await cacheService.saveBasicAnalytics(
       overallStats: _overallStats,
       contactRankings: rankings,
       dbModifiedTime: dbModifiedTime,
     );
-    
+    await logger.debug('AnalyticsPage', '缓存保存完成');
+
     if (!mounted) return;
     setState(() {
       _allContactRankings = rankings;
       _contactRankings = rankings.take(_topN).toList();
       _loadingStatus = '完成';
     });
+
+    await logger.debug('AnalyticsPage', '========== 数据分析执行完成 ==========');
   }
 
   Future<bool?> _showDatabaseChangedDialog() async {
@@ -195,38 +240,53 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   }
 
   Future<List<ContactRanking>> _loadRankingsWithProgress() async {
+    await logger.debug('AnalyticsPage', '开始加载联系人排名（带进度）');
+
     final sessions = await widget.databaseService.getSessions();
     final privateSessions = sessions.where((s) => !s.isGroup).toList();
-    
+    await logger.debug('AnalyticsPage', '获取到 ${privateSessions.length} 个私聊会话');
+
     if (!mounted) return [];
     setState(() {
       _totalCount = privateSessions.length;
       _processedCount = 0;
     });
-    
+
     final rankings = <ContactRanking>[];
     final displayNames = await widget.databaseService.getDisplayNames(
       privateSessions.map((s) => s.username).toList(),
     );
-    
+    await logger.debug('AnalyticsPage', '获取到 ${displayNames.length} 个联系人显示名');
+
+    int skippedCount = 0;
+    int errorCount = 0;
+
     for (var i = 0; i < privateSessions.length; i++) {
       final session = privateSessions[i];
-      
+
       if (!mounted) break;
       setState(() {
         _processedCount = i + 1;
         _loadingStatus = '正在分析: ${displayNames[session.username] ?? session.username}';
       });
-      
+
+      // 每处理100个联系人记录一次进度
+      if ((i + 1) % 100 == 0) {
+        await logger.debug('AnalyticsPage', '已处理 ${i + 1}/${privateSessions.length} 个联系人');
+      }
+
       try {
         // 使用SQL直接统计，不加载所有消息
         final stats = await widget.databaseService.getSessionMessageStats(session.username);
         final messageCount = stats['total'] as int;
-        if (messageCount == 0) continue;
-        
+        if (messageCount == 0) {
+          skippedCount++;
+          continue;
+        }
+
         final sentCount = stats['sent'] as int;
         final receivedCount = stats['received'] as int;
-        
+
         // 获取最后一条消息时间
         final timeRange = await widget.databaseService.getSessionTimeRange(session.username);
         final lastMessageTime = timeRange['last'] != null
@@ -241,13 +301,27 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           receivedCount: receivedCount,
           lastMessageTime: lastMessageTime,
         ));
-      } catch (e) {
+      } catch (e, stackTrace) {
         // 读取失败，跳过
+        errorCount++;
+        await logger.warning('AnalyticsPage', '读取联系人 ${session.username} 失败: $e\n$stackTrace');
       }
     }
-    
+
+    await logger.debug('AnalyticsPage', '联系人处理完成，有效: ${rankings.length}, 跳过: $skippedCount, 错误: $errorCount');
+
     rankings.sort((a, b) => b.messageCount.compareTo(a.messageCount));
-    return rankings.take(50).toList();
+    final topRankings = rankings.take(50).toList();
+
+    await logger.info('AnalyticsPage', '联系人排名完成，返回前 ${topRankings.length} 名');
+    if (topRankings.isNotEmpty) {
+      await logger.debug('AnalyticsPage', '第1名: ${topRankings[0].displayName}, 消息数: ${topRankings[0].messageCount}');
+      if (topRankings.length >= 10) {
+        await logger.debug('AnalyticsPage', '第10名: ${topRankings[9].displayName}, 消息数: ${topRankings[9].messageCount}');
+      }
+    }
+
+    return topRankings;
   }
 
   @override

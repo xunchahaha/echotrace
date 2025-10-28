@@ -1,6 +1,7 @@
 import '../models/message.dart';
 import '../models/analytics_data.dart';
 import 'database_service.dart';
+import 'logger_service.dart';
 
 /// 数据分析服务
 class AnalyticsService {
@@ -93,16 +94,25 @@ class AnalyticsService {
 
   /// 分析全部私聊的总体统计
   Future<ChatStatistics> analyzeAllPrivateChats() async {
+    await logger.debug('AnalyticsService', '========== 开始分析全部私聊统计 ==========');
+
     // 1. 获取所有私聊会话
+    await logger.debug('AnalyticsService', '获取所有会话列表');
     final sessions = await _databaseService.getSessions();
     final privateSessions = sessions.where((s) => !s.isGroup).toList();
-    
+    await logger.info('AnalyticsService', '找到 ${privateSessions.length} 个私聊会话（总会话数: ${sessions.length}）');
+
     // 2. 批量获取所有会话的统计数据（一次性查询）
+    await logger.debug('AnalyticsService', '开始批量查询会话统计数据');
+    final startTime = DateTime.now();
     final batchStats = await _databaseService.getBatchSessionStats(
       privateSessions.map((s) => s.username).toList(),
     );
-    
+    final elapsed = DateTime.now().difference(startTime);
+    await logger.info('AnalyticsService', '批量查询完成，耗时: ${elapsed.inMilliseconds}ms，获得 ${batchStats.length} 个会话的统计');
+
     // 3. 累加统计结果
+    await logger.debug('AnalyticsService', '开始累加统计结果');
     int totalMessages = 0;
     int textMessages = 0;
     int imageMessages = 0;
@@ -114,9 +124,19 @@ class AnalyticsService {
     DateTime? firstMessageTime;
     DateTime? lastMessageTime;
     final activeDaysSet = <String>{};
-    
-    for (final stats in batchStats.values) {
-      totalMessages += stats['total'] as int;
+
+    int processedCount = 0;
+    int zeroActiveDaysCount = 0;
+    final activeDaysDistribution = <int, int>{}; // 活跃天数分布统计
+
+    for (final entry in batchStats.entries) {
+      final sessionId = entry.key;
+      final stats = entry.value;
+
+      final sessionTotal = stats['total'] as int;
+      final sessionActiveDays = stats['activeDays'] as int;
+
+      totalMessages += sessionTotal;
       sentMessages += stats['sent'] as int;
       receivedMessages += stats['received'] as int;
       textMessages += stats['text'] as int;
@@ -124,7 +144,7 @@ class AnalyticsService {
       voiceMessages += stats['voice'] as int;
       videoMessages += stats['video'] as int;
       otherMessages += stats['other'] as int;
-      
+
       // 时间范围
       if (stats['first'] != null) {
         final firstTime = DateTime.fromMillisecondsSinceEpoch((stats['first'] as int) * 1000);
@@ -138,14 +158,46 @@ class AnalyticsService {
           lastMessageTime = lastTime;
         }
       }
-      
+
       // 活跃天数已经在批量查询中计算好了
-      activeDaysSet.add(stats['activeDays'].toString());
+      activeDaysSet.add(sessionActiveDays.toString());
+
+      // 统计活跃天数分布
+      activeDaysDistribution[sessionActiveDays] = (activeDaysDistribution[sessionActiveDays] ?? 0) + 1;
+
+      // 记录活跃天数为0的会话
+      if (sessionActiveDays == 0 && sessionTotal > 0) {
+        zeroActiveDaysCount++;
+        await logger.warning('AnalyticsService', '会话 $sessionId 有 $sessionTotal 条消息但活跃天数为0');
+      }
+
+      processedCount++;
+      // 每处理100个会话记录一次进度
+      if (processedCount % 100 == 0) {
+        await logger.debug('AnalyticsService', '已累加 $processedCount/${batchStats.length} 个会话的统计（活跃天数为0: $zeroActiveDaysCount）');
+      }
     }
-    
+
     // 活跃天数需要重新计算总数（因为不同会话可能有相同日期）
     int totalActiveDays = batchStats.values.fold(0, (sum, stats) => sum + (stats['activeDays'] as int));
-    
+
+    await logger.debug('AnalyticsService', '活跃天数统计: 总计=$totalActiveDays, 为0的会话数=$zeroActiveDaysCount');
+    await logger.debug('AnalyticsService', '活跃天数分布（前10）: ${activeDaysDistribution.entries.toList()..sort((a, b) => b.value.compareTo(a.value))..take(10).toList()}');
+
+    await logger.info('AnalyticsService', '统计累加完成');
+    await logger.debug('AnalyticsService', '总消息数: $totalMessages');
+    await logger.debug('AnalyticsService', '文本消息: $textMessages');
+    await logger.debug('AnalyticsService', '图片消息: $imageMessages');
+    await logger.debug('AnalyticsService', '语音消息: $voiceMessages');
+    await logger.debug('AnalyticsService', '视频消息: $videoMessages');
+    await logger.debug('AnalyticsService', '其他消息: $otherMessages');
+    await logger.debug('AnalyticsService', '发送消息: $sentMessages');
+    await logger.debug('AnalyticsService', '接收消息: $receivedMessages');
+    await logger.debug('AnalyticsService', '活跃天数: $totalActiveDays');
+    await logger.debug('AnalyticsService', '首条消息时间: $firstMessageTime');
+    await logger.debug('AnalyticsService', '最后消息时间: $lastMessageTime');
+    await logger.debug('AnalyticsService', '========== 全部私聊统计分析完成 ==========');
+
     return ChatStatistics(
       totalMessages: totalMessages,
       textMessages: textMessages,

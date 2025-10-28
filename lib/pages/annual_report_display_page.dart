@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'dart:ui' as ui;
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:image/image.dart' as img;
 import '../models/advanced_analytics_data.dart';
@@ -41,6 +40,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
   // 导出相关
   bool _isExporting = false;
   String _nameHideMode = 'none'; // none, full, firstChar
+  bool _exportAsSeparateImages = false; // false=合并, true=分开保存
   
   // 报告生成相关
   AnalyticsBackgroundService? _backgroundService;
@@ -185,14 +185,15 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
   }
   
   Future<void> _startGenerateReport() async {
+    await logger.debug('AnnualReportPage', '========== 开始生成年度报告 ==========');
     await logger.info('AnnualReportPage', '_startGenerateReport 被调用');
-    
+
     // 防止重复生成
     if (_isGenerating) {
       await logger.warning('AnnualReportPage', '已经在生成中，忽略重复调用');
       return;
     }
-    
+
     if (_backgroundService == null) {
       await logger.error('AnnualReportPage', '背景服务未初始化');
       if (mounted) {
@@ -203,16 +204,17 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
       return;
     }
     
-    await logger.info('AnnualReportPage', '设置生成状态为 true');
+    await logger.debug('AnnualReportPage', '设置生成状态为 true');
     setState(() {
       _isGenerating = true;
       _currentTaskName = '';
       _currentTaskStatus = '';
       _totalProgress = 0;
     });
-    
+
     try {
-      await logger.info('AnnualReportPage', '开始调用 generateFullAnnualReport');
+      await logger.debug('AnnualReportPage', '开始调用 generateFullAnnualReport，年份: ${widget.year}');
+      final startTime = DateTime.now();
       final data = await _backgroundService!.generateFullAnnualReport(
         widget.year,
         (taskName, status, progress) async {
@@ -226,20 +228,22 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
           }
         },
       );
-      
-      await logger.info('AnnualReportPage', 'generateFullAnnualReport 返回结果');
-      
+
+      final elapsed = DateTime.now().difference(startTime);
+      await logger.info('AnnualReportPage', 'generateFullAnnualReport 完成，耗时: ${elapsed.inSeconds}秒');
+      await logger.debug('AnnualReportPage', '报告数据包含 ${data.keys.length} 个字段');
+
       // 保存数据库修改时间
       data['dbModifiedTime'] = _dbModifiedTime;
-      await logger.info('AnnualReportPage', '保存数据库修改时间: $_dbModifiedTime');
-      
+      await logger.debug('AnnualReportPage', '保存数据库修改时间: $_dbModifiedTime');
+
       // 保存到缓存
-      await logger.info('AnnualReportPage', '开始保存缓存');
+      await logger.debug('AnnualReportPage', '开始保存缓存');
       await AnnualReportCacheService.saveReport(widget.year, data);
-      await logger.info('AnnualReportPage', '缓存保存完成');
-      
+      await logger.debug('AnnualReportPage', '缓存保存完成');
+
       if (mounted) {
-        await logger.info('AnnualReportPage', '更新UI状态');
+        await logger.debug('AnnualReportPage', '更新UI状态');
         setState(() {
           _reportData = data;
           _isGenerating = false;
@@ -254,8 +258,8 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
             rethrow;
           }
         });
-        await logger.info('AnnualReportPage', '开始构建页面');
-        await logger.info('AnnualReportPage', '页面构建完成');
+        await logger.debug('AnnualReportPage', '页面构建完成');
+        await logger.debug('AnnualReportPage', '========== 年度报告生成完成 ==========');
       }
     } catch (e, stackTrace) {
       await logger.error('AnnualReportPage', '生成报告失败: $e\n堆栈: $stackTrace');
@@ -293,7 +297,18 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
 
   void _buildPages() {
     try {
-      logger.info('AnnualReportPage', '开始构建页面列表');
+      logger.debug('AnnualReportPage', '开始构建页面列表');
+      logger.debug('AnnualReportPage', '_reportData 包含的键: ${_reportData?.keys.toList()}');
+
+      // 检查关键数据
+      if (_reportData != null) {
+        final whoRepliesFastest = _reportData!['whoRepliesFastest'];
+        final myFastestReplies = _reportData!['myFastestReplies'];
+        logger.debug('AnnualReportPage', '构建页面前数据检查:');
+        logger.debug('AnnualReportPage', '  whoRepliesFastest: ${whoRepliesFastest == null ? "null" : (whoRepliesFastest is List ? "List(${whoRepliesFastest.length})" : whoRepliesFastest.runtimeType)}');
+        logger.debug('AnnualReportPage', '  myFastestReplies: ${myFastestReplies == null ? "null" : (myFastestReplies is List ? "List(${myFastestReplies.length})" : myFastestReplies.runtimeType)}');
+      }
+
       _pages = [
         _buildCoverPage(),
         _buildIntroPage(),
@@ -305,9 +320,10 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
         _buildActivityPatternPage(),
         _buildMidnightKingPage(),
         _buildResponseSpeedPage(),
+        _buildFormerFriendsPage(),
         _buildEndingPage(),
       ];
-      logger.info('AnnualReportPage', '页面列表构建完成，共${_pages!.length}页');
+      logger.debug('AnnualReportPage', '页面列表构建完成，共${_pages!.length}页');
     } catch (e, stackTrace) {
       logger.error('AnnualReportPage', '页面构建失败', e, stackTrace);
       // 重新抛出异常，让上层处理
@@ -2108,16 +2124,53 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
 
   // 响应速度页（合并最快响应和我回复最快）
   Widget _buildResponseSpeedPage() {
+    logger.debug('AnnualReportPage', '========== 构建响应速度页面 ==========');
+    logger.debug('AnnualReportPage', '_reportData 是否为 null: ${_reportData == null}');
+
+    if (_reportData == null) {
+      logger.error('AnnualReportPage', ' _reportData 为 null！');
+      return Container(
+        color: Colors.white,
+        child: const Center(child: Text('数据错误：报告数据为空')),
+      );
+    }
+
+    logger.debug('AnnualReportPage', '_reportData 包含的键: ${_reportData!.keys.toList()}');
+
     final whoRepliesFastest = _reportData!['whoRepliesFastest'] as List?;
     final myFastestReplies = _reportData!['myFastestReplies'] as List?;
-    
+
+    logger.info('AnnualReportPage', '响应速度数据检查:');
+    logger.info('AnnualReportPage', '  whoRepliesFastest: ${whoRepliesFastest == null ? "null" : "List(${whoRepliesFastest.length})"}');
+    logger.info('AnnualReportPage', '  myFastestReplies: ${myFastestReplies == null ? "null" : "List(${myFastestReplies.length})"}');
+
+    if (whoRepliesFastest != null && whoRepliesFastest.isNotEmpty) {
+      logger.debug('AnnualReportPage', '  whoRepliesFastest 前3条数据:');
+      for (int i = 0; i < whoRepliesFastest.length && i < 3; i++) {
+        final item = whoRepliesFastest[i];
+        logger.debug('AnnualReportPage', '    [$i]: $item');
+      }
+    }
+
+    if (myFastestReplies != null && myFastestReplies.isNotEmpty) {
+      logger.debug('AnnualReportPage', '  myFastestReplies 前3条数据:');
+      for (int i = 0; i < myFastestReplies.length && i < 3; i++) {
+        final item = myFastestReplies[i];
+        logger.debug('AnnualReportPage', '    [$i]: $item');
+      }
+    }
+
     if ((whoRepliesFastest == null || whoRepliesFastest.isEmpty) &&
         (myFastestReplies == null || myFastestReplies.isEmpty)) {
+      logger.warning('AnnualReportPage', '命中"暂无数据"判定逻辑！');
+      logger.warning('AnnualReportPage', '  原因: whoRepliesFastest=${whoRepliesFastest == null ? "null" : "empty"}, myFastestReplies=${myFastestReplies == null ? "null" : "empty"}');
       return Container(
         color: Colors.white,
         child: const Center(child: Text('暂无数据')),
       );
     }
+
+    logger.info('AnnualReportPage', ' 数据检查通过，开始构建响应速度页面');
     
     return Container(
       color: Colors.white,
@@ -2300,6 +2353,292 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
     }
   }
 
+  // 曾经的好朋友页
+  Widget _buildFormerFriendsPage() {
+    final List<dynamic>? formerFriendsJson = _reportData?['formerFriends'];
+    final Map<String, dynamic>? stats = _reportData?['formerFriendsStats'] as Map<String, dynamic>?;
+
+    // 检查是否有数据
+    if (formerFriendsJson == null || formerFriendsJson.isEmpty) {
+      // 检查统计信息，判断是否因为聊天记录不足14天
+      String message = AnnualReportTexts.formerFriendNoData;
+      String? subtitle;
+
+      if (stats != null) {
+        final totalSessions = stats['totalSessions'] as int? ?? 0;
+        final sessionsWithMessages = stats['sessionsWithMessages'] as int? ?? 0;
+        final sessionsUnder14Days = stats['sessionsUnder14Days'] as int? ?? 0;
+
+        if (totalSessions > 0 && sessionsWithMessages > 0) {
+          if (sessionsUnder14Days == sessionsWithMessages) {
+            message = AnnualReportTexts.formerFriendInsufficientData;
+            subtitle = AnnualReportTexts.formerFriendInsufficientDataDetail;
+          } else if (sessionsUnder14Days > 0) {
+            message = AnnualReportTexts.formerFriendNoQualified;
+            subtitle = '有 $sessionsUnder14Days 个好友聊天记录不足14天\n其他好友未符合"曾经的好朋友"条件';
+          } else {
+            message = AnnualReportTexts.formerFriendNoQualified;
+            subtitle = AnnualReportTexts.formerFriendAllGoodRelations;
+          }
+        }
+      }
+
+      return Container(
+        color: Colors.white,
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(40),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.people_outline,
+                    size: 60,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    message,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      subtitle,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: Colors.grey[600],
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 只显示第一个曾经的好朋友
+    final formerFriendData = formerFriendsJson.first as Map<String, dynamic>;
+    final displayName = formerFriendData['displayName'] as String;
+    final activeStartDate = DateTime.parse(formerFriendData['activeStartDate'] as String);
+    final activeEndDate = DateTime.parse(formerFriendData['activeEndDate'] as String);
+    final activeDays = formerFriendData['activeDays'] as int;
+    final activeDaysCount = formerFriendData['activeDaysCount'] as int;
+    final activeMessageCount = formerFriendData['activeMessageCount'] as int;
+    final daysSinceActive = formerFriendData['daysSinceActive'] as int;
+    const primaryColor = Color(0xFF34C759);
+
+    return Container(
+      color: Colors.white,
+      child: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final height = constraints.maxHeight;
+            final width = constraints.maxWidth;
+
+            // 统一字体大小：只有三个层级
+            final titleSize = height > 700 ? 32.0 : 28.0;      // 标题
+            final emphasisSize = height > 700 ? 48.0 : 42.0;   // 强调（名字、数字）
+            final bodySize = height > 700 ? 18.0 : 16.0;       // 正文
+
+            return SingleChildScrollView(
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: width * 0.08,
+                  vertical: height * 0.04,
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // 标题
+                    FadeInText(
+                      text: AnnualReportTexts.formerFriendTitle,
+                      style: TextStyle(
+                        fontSize: titleSize,
+                        fontWeight: FontWeight.bold,
+                        color: primaryColor,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                    SizedBox(height: height * 0.01),
+                    // 副标题
+                    FadeInText(
+                      text: AnnualReportTexts.formerFriendSubtitle,
+                      delay: const Duration(milliseconds: 200),
+                      style: TextStyle(
+                        fontSize: bodySize,
+                        color: Colors.grey[500],
+                        height: 1.5,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: height * 0.04),
+
+                    // "还记得吗，那段时间"
+                    FadeInText(
+                      text: AnnualReportTexts.formerFriendRemember,
+                      delay: const Duration(milliseconds: 400),
+                      style: TextStyle(
+                        fontSize: bodySize,
+                        color: Colors.grey[700],
+                        height: 1.6,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: height * 0.02),
+
+                    // 好友名字
+                    SlideInCard(
+                      delay: const Duration(milliseconds: 600),
+                      child: _buildNameWithBlur(
+                        displayName,
+                        TextStyle(
+                          fontSize: emphasisSize,
+                          fontWeight: FontWeight.bold,
+                          color: primaryColor,
+                          height: 1.2,
+                        ),
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                      ),
+                    ),
+                    SizedBox(height: height * 0.02),
+
+                    // "几乎每天都会出现在你的对话框里"
+                    FadeInText(
+                      text: AnnualReportTexts.formerFriendAlmostDaily,
+                      delay: const Duration(milliseconds: 800),
+                      style: TextStyle(
+                        fontSize: bodySize,
+                        color: Colors.grey[700],
+                        height: 1.6,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: height * 0.03),
+
+                    // 时间范围和数据（紧凑排版）
+                    SlideInCard(
+                      delay: const Duration(milliseconds: 1000),
+                      child: Column(
+                        children: [
+                          // "从 2023/8/24 到 2024/11/29"
+                          Text(
+                            '${AnnualReportTexts.formerFriendFromDate}${_formatDate(activeStartDate)}${AnnualReportTexts.formerFriendToDate}${_formatDate(activeEndDate)}',
+                            style: TextStyle(
+                              fontSize: bodySize,
+                              color: Colors.grey[600],
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          SizedBox(height: height * 0.015),
+                          // "整整 464 天" - 一行显示
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              Text(
+                                AnnualReportTexts.formerFriendWholeDays,
+                                style: TextStyle(
+                                  fontSize: bodySize,
+                                  color: Colors.grey[700],
+                                ),
+                              ),
+                              Text(
+                                activeDays.toString(),
+                                style: TextStyle(
+                                  fontSize: emphasisSize,
+                                  fontWeight: FontWeight.bold,
+                                  color: primaryColor,
+                                ),
+                              ),
+                              Text(
+                                AnnualReportTexts.formerFriendDaysUnit,
+                                style: TextStyle(
+                                  fontSize: bodySize,
+                                  color: Colors.grey[700],
+                                ),
+                              ),
+                            ],
+                          ),
+                          SizedBox(height: height * 0.01),
+                          // "你们聊了 273 天，发了 85640 条消息"
+                          Text(
+                            '${AnnualReportTexts.formerFriendChattedDays}$activeDaysCount${AnnualReportTexts.formerFriendChattedDaysUnit}$activeMessageCount${AnnualReportTexts.formerFriendMessagesUnit}',
+                            style: TextStyle(
+                              fontSize: bodySize,
+                              color: Colors.grey[600],
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: height * 0.03),
+
+                    // "但现在"
+                    FadeInText(
+                      text: AnnualReportTexts.formerFriendButNow,
+                      delay: const Duration(milliseconds: 1200),
+                      style: TextStyle(
+                        fontSize: bodySize,
+                        color: Colors.grey[700],
+                        fontWeight: FontWeight.w500,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: height * 0.015),
+
+                    // 后续情况（紧凑排版）
+                    SlideInCard(
+                      delay: const Duration(milliseconds: 1400),
+                      child: Text(
+                        '${AnnualReportTexts.formerFriendSinceThen}$daysSinceActive${AnnualReportTexts.formerFriendDaysUnit}',
+                        style: TextStyle(
+                          fontSize: bodySize,
+                          color: Colors.grey[600],
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    SizedBox(height: height * 0.03),
+
+                    // 感悟文字
+                    FadeInText(
+                      text: AnnualReportTexts.formerFriendClosing,
+                      delay: const Duration(milliseconds: 1600),
+                      style: TextStyle(
+                        fontSize: bodySize,
+                        color: Colors.grey[500],
+                        height: 1.8,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // 辅助方法：格式化日期
+  String _formatDate(DateTime date) {
+    return '${date.year}/${date.month}/${date.day}';
+  }
+
   // 结束页 - 简约排版，修复溢出
   Widget _buildEndingPage() {
     final yearText = widget.year != null ? '${widget.year}年' : '这段时光';
@@ -2474,43 +2813,69 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
   // 显示导出对话框
   void _showExportDialog() {
     String tempHideMode = _nameHideMode;
-    
+    bool tempSeparateImages = _exportAsSeparateImages;
+
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) => AlertDialog(
           title: const Text('导出年度报告'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('选择联系人信息显示方式：'),
-              const SizedBox(height: 16),
-              RadioListTile<String>(
-                title: const Text('显示完整信息'),
-                value: 'none',
-                groupValue: tempHideMode,
-                onChanged: (value) {
-                  setState(() => tempHideMode = value!);
-                },
-              ),
-              RadioListTile<String>(
-                title: const Text('仅保留姓氏'),
-                value: 'firstChar',
-                groupValue: tempHideMode,
-                onChanged: (value) {
-                  setState(() => tempHideMode = value!);
-                },
-              ),
-              RadioListTile<String>(
-                title: const Text('完全隐藏'),
-                value: 'full',
-                groupValue: tempHideMode,
-                onChanged: (value) {
-                  setState(() => tempHideMode = value!);
-                },
-              ),
-            ],
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('导出格式：', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                RadioListTile<bool>(
+                  title: const Text('合并为一张长图'),
+                  subtitle: const Text('所有页面拼接成一张图片'),
+                  value: false,
+                  groupValue: tempSeparateImages,
+                  onChanged: (value) {
+                    setState(() => tempSeparateImages = value!);
+                  },
+                ),
+                RadioListTile<bool>(
+                  title: const Text('分开保存'),
+                  subtitle: const Text('每页单独保存为一张图片'),
+                  value: true,
+                  groupValue: tempSeparateImages,
+                  onChanged: (value) {
+                    setState(() => tempSeparateImages = value!);
+                  },
+                ),
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 16),
+                const Text('联系人信息显示：', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                RadioListTile<String>(
+                  title: const Text('显示完整信息'),
+                  value: 'none',
+                  groupValue: tempHideMode,
+                  onChanged: (value) {
+                    setState(() => tempHideMode = value!);
+                  },
+                ),
+                RadioListTile<String>(
+                  title: const Text('仅保留姓氏'),
+                  value: 'firstChar',
+                  groupValue: tempHideMode,
+                  onChanged: (value) {
+                    setState(() => tempHideMode = value!);
+                  },
+                ),
+                RadioListTile<String>(
+                  title: const Text('完全隐藏'),
+                  value: 'full',
+                  groupValue: tempHideMode,
+                  onChanged: (value) {
+                    setState(() => tempHideMode = value!);
+                  },
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(
@@ -2519,7 +2884,10 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
             ),
             ElevatedButton(
               onPressed: () {
-                this.setState(() => _nameHideMode = tempHideMode);
+                this.setState(() {
+                  _nameHideMode = tempHideMode;
+                  _exportAsSeparateImages = tempSeparateImages;
+                });
                 Navigator.pop(context);
                 _exportReport();
               },
@@ -2565,47 +2933,51 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
     try {
       // 获取保存目录
       final directory = await getApplicationDocumentsDirectory();
-      final exportDir = Directory('${directory.path}/EchoTrace');
-      
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final yearText = widget.year != null ? '${widget.year}年' : '全部';
+
+      // 创建专门的导出文件夹：EchoTrace/年度报告_YYYY_timestamp
+      final exportDirName = '年度报告_${yearText}_$timestamp';
+      final exportDir = Directory('${directory.path}/EchoTrace/$exportDirName');
+
       if (!await exportDir.exists()) {
         await exportDir.create(recursive: true);
       }
 
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
       final images = <Uint8List>[];
-      
+
       // 记录当前页面
       final originalPage = _currentPage;
-      
+
       // 通过翻页截图的方式获取所有页面
       for (int i = 0; i < _pages!.length; i++) {
         // 跳转到指定页面
         _pageController.jumpToPage(i);
-        
+
         // 等待页面切换动画完成
         await Future.delayed(const Duration(milliseconds: 500));
-        
+
         // 等待所有帧完成渲染（包括文本和emoji）
         await SchedulerBinding.instance.endOfFrame;
         await Future.delayed(const Duration(milliseconds: 100));
-        
+
         // 再等待确保emoji字体加载完成
         await Future.delayed(const Duration(milliseconds: 2000));
-        
+
         // 再次等待一帧，确保所有内容都已完全绘制
         await SchedulerBinding.instance.endOfFrame;
-        
+
         // 截取当前页面
         try {
           final boundary = _pageViewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
           if (boundary != null) {
             // 标记需要重绘
             boundary.markNeedsPaint();
-            
+
             // 等待重绘完成
             await Future.delayed(const Duration(milliseconds: 200));
             await SchedulerBinding.instance.endOfFrame;
-            
+
             // 执行截图
             final image = await boundary.toImage(pixelRatio: 3.0);
             final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -2616,7 +2988,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
         } catch (e) {
         }
       }
-      
+
       // 恢复到原始页面
       _pageController.jumpToPage(originalPage);
 
@@ -2624,14 +2996,24 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
         throw Exception('生成图片失败：所有页面截图都失败了');
       }
 
-      // 在后台线程拼接图片
-      final combinedImage = await compute(_combineImagesInBackground, images);
-      
-      // 保存文件
-      final yearText = widget.year != null ? '${widget.year}' : 'all';
-      final filePath = '${exportDir.path}/annual_report_${yearText}_$timestamp.png';
-      final file = File(filePath);
-      await file.writeAsBytes(combinedImage);
+      String resultMessage;
+
+      if (_exportAsSeparateImages) {
+        // 分开保存每一页
+        for (int i = 0; i < images.length; i++) {
+          final filePath = '${exportDir.path}/page_${i + 1}.png';
+          final file = File(filePath);
+          await file.writeAsBytes(images[i]);
+        }
+        resultMessage = '导出成功！\n保存位置：${exportDir.path}\n共生成 ${images.length} 张图片';
+      } else {
+        // 合并为一张长图
+        final combinedImage = await compute(_combineImagesInBackground, images);
+        final filePath = '${exportDir.path}/年度报告_合并.png';
+        final file = File(filePath);
+        await file.writeAsBytes(combinedImage);
+        resultMessage = '导出成功！\n保存位置：$filePath\n共合并 ${images.length} 页';
+      }
 
       // 关闭进度对话框
       if (mounted) {
@@ -2641,7 +3023,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('导出成功：$filePath\n共生成 ${images.length} 页'),
+            content: Text(resultMessage),
             duration: const Duration(seconds: 5),
           ),
         );
@@ -2651,7 +3033,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
       if (mounted) {
         Navigator.of(context).pop();
       }
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('导出失败：$e')),
@@ -2662,6 +3044,7 @@ class _AnnualReportDisplayPageState extends State<AnnualReportDisplayPage> {
         setState(() {
           _isExporting = false;
           _nameHideMode = 'none'; // 恢复显示
+          _exportAsSeparateImages = false; // 恢复默认
         });
       }
     }

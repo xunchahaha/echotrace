@@ -190,6 +190,7 @@ class WeChatVFSNative {
       
       // 调试：打印第0页的解密详情
       if (pageNum == 0) {
+        // ignore: unused_local_variable
         final header = String.fromCharCodes(decrypted.sublist(0, 16));
       }
       
@@ -197,7 +198,7 @@ class WeChatVFSNative {
       for (int i = 0; i < decrypted.length && i < pageSize; i++) {
         decryptedPtr[i] = decrypted[i];
       }
-    } catch (e, stackTrace) {
+    } catch (e) {
     }
   }
   

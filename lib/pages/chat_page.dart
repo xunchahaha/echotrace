@@ -17,9 +17,10 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin {
+class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
   ChatSession? _selectedSession;
   List<ChatSession> _sessions = [];
+  List<ChatSession> _filteredSessions = []; // 搜索过滤后的会话列表
   List<Message> _messages = [];
   bool _isLoadingSessions = false;
   bool _isLoadingMessages = false;
@@ -32,6 +33,13 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   late AnimationController _refreshController;
   DateTime? _lastInitialLoadTime;
 
+  // 搜索相关
+  bool _isSearching = false;
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  late AnimationController _searchAnimationController;
+  late Animation<double> _searchAnimation;
+
 
   @override
   void initState() {
@@ -40,6 +48,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       duration: const Duration(milliseconds: 800),
       vsync: this,
     );
+    _searchAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+    _searchAnimation = CurvedAnimation(
+      parent: _searchAnimationController,
+      curve: Curves.easeInOut,
+    );
+    _searchController.addListener(_onSearchChanged);
     _loadSessions();
     _scrollController.addListener(_onScroll);
   }
@@ -48,7 +65,49 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   void dispose() {
     _scrollController.dispose();
     _refreshController.dispose();
+    _searchAnimationController.dispose();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged() async {
+    final query = _searchController.text.trim().toLowerCase();
+    await logger.debug('ChatPage', '搜索关键词: "$query"');
+
+    setState(() {
+      if (query.isEmpty) {
+        _filteredSessions = _sessions;
+        logger.debug('ChatPage', '清空搜索，显示全部 ${_sessions.length} 个会话');
+      } else {
+        _filteredSessions = _sessions.where((session) {
+          final displayName = session.displayName?.toLowerCase() ?? '';
+          final username = session.username.toLowerCase();
+          final summary = session.displaySummary.toLowerCase();
+          return displayName.contains(query) ||
+                 username.contains(query) ||
+                 summary.contains(query);
+        }).toList();
+        logger.debug('ChatPage', '搜索结果: 找到 ${_filteredSessions.length} 个匹配的会话');
+      }
+    });
+  }
+
+  void _toggleSearch() async {
+    await logger.debug('ChatPage', '切换搜索模式: ${!_isSearching}');
+
+    setState(() {
+      _isSearching = !_isSearching;
+      if (_isSearching) {
+        _searchAnimationController.forward();
+        _searchFocusNode.requestFocus();
+      } else {
+        _searchAnimationController.reverse();
+        _searchController.clear();
+        _filteredSessions = _sessions;
+        _searchFocusNode.unfocus();
+      }
+    });
   }
 
   void _onScroll() {
@@ -112,6 +171,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       if (mounted) {
         setState(() {
           _sessions = filteredSessions;
+          _filteredSessions = filteredSessions; // 初始化过滤列表
           _isLoadingSessions = false;
         });
         _refreshController.stop();
@@ -397,6 +457,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                     ),
                     const Spacer(),
                     IconButton(
+                      icon: Icon(_isSearching ? Icons.close : Icons.search),
+                      onPressed: _toggleSearch,
+                      tooltip: _isSearching ? '关闭搜索' : '搜索',
+                    ),
+                    IconButton(
                       icon: RotationTransition(
                         turns: _refreshController,
                         child: const Icon(Icons.refresh),
@@ -405,6 +470,47 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                       tooltip: '刷新',
                     ),
                   ],
+                ),
+              ),
+              // 搜索框（带动画）
+              SizeTransition(
+                sizeFactor: _searchAnimation,
+                axisAlignment: -1.0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    border: Border(
+                      bottom: BorderSide(
+                        color: Theme.of(context).colorScheme.outline.withOpacity(0.1),
+                      ),
+                    ),
+                  ),
+                  child: TextField(
+                    controller: _searchController,
+                    focusNode: _searchFocusNode,
+                    decoration: InputDecoration(
+                      hintText: '搜索会话或消息内容...',
+                      prefixIcon: const Icon(Icons.search, size: 20),
+                      suffixIcon: _searchController.text.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 20),
+                              onPressed: () {
+                                _searchController.clear();
+                              },
+                            )
+                          : null,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        borderSide: BorderSide.none,
+                      ),
+                      filled: true,
+                      fillColor: Colors.white,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      isDense: true,
+                    ),
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
                 ),
               ),
               // 会话列表
@@ -444,19 +550,19 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                     
                     return _isLoadingSessions
                         ? const Center(child: CircularProgressIndicator())
-                        : _sessions.isEmpty
+                        : _filteredSessions.isEmpty
                             ? Center(
                                 child: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
                                     Icon(
-                                      Icons.chat_bubble_outline,
+                                      _isSearching ? Icons.search_off : Icons.chat_bubble_outline,
                                       size: 64,
                                       color: Theme.of(context).colorScheme.outline,
                                     ),
                                     const SizedBox(height: 16),
                                     Text(
-                                      '暂无会话',
+                                      _isSearching ? '未找到匹配的会话' : '暂无会话',
                                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                                         color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
                                       ),
@@ -465,9 +571,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                                 ),
                               )
                             : ListView.builder(
-                                itemCount: _sessions.length,
+                                itemCount: _filteredSessions.length,
                                 itemBuilder: (context, index) {
-                                  final session = _sessions[index];
+                                  final session = _filteredSessions[index];
                                   return ChatSessionItem(
                                     session: session,
                                     isSelected: _selectedSession?.username == session.username,

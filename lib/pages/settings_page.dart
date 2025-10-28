@@ -36,6 +36,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _isSuccess = false;
   String _databaseMode = 'backup'; // 'backup' 或 'realtime'
   bool _showWxidInput = false; // 是否显示手动输入wxid的输入框
+  bool _debugMode = false; // 调试模式开关
 
   @override
   void initState() {
@@ -63,6 +64,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final imageXorKey = await _configService.getImageXorKey();
     final imageAesKey = await _configService.getImageAesKey();
     final manualWxid = await _configService.getManualWxid();
+    final debugMode = await _configService.getDebugMode();
 
     if (mounted) {
       setState(() {
@@ -72,10 +74,11 @@ class _SettingsPageState extends State<SettingsPage> {
         _imageXorKeyController.text = imageXorKey ?? '';
         _imageAesKeyController.text = imageAesKey ?? '';
         _wxidController.text = manualWxid ?? '';
+        _debugMode = debugMode;
         // 如果已经有手动输入的wxid，显示输入框
         _showWxidInput = (manualWxid != null && manualWxid.isNotEmpty);
       });
-      
+
       // 如果有路径，检查是否存在账号目录
       if (path != null && path.isNotEmpty) {
         _checkAccountDirectory(path);
@@ -478,7 +481,6 @@ class _SettingsPageState extends State<SettingsPage> {
             // 标题区域
             Row(
               children: [
-                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -722,7 +724,6 @@ class _SettingsPageState extends State<SettingsPage> {
             // 标题区域
             Row(
               children: [
-                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -888,7 +889,6 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             Row(
               children: [
-                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1047,7 +1047,6 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             Row(
               children: [
-                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1223,7 +1222,6 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             Row(
               children: [
-                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1321,6 +1319,74 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 );
               },
+            ),
+            const SizedBox(height: 16),
+
+            // 调试模式开关
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: _debugMode
+                    ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3)
+                    : Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(12),
+                border: _debugMode
+                    ? Border.all(color: Theme.of(context).colorScheme.primary, width: 1.5)
+                    : null,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _debugMode ? Icons.bug_report : Icons.bug_report_outlined,
+                    color: _debugMode
+                        ? Theme.of(context).colorScheme.primary
+                        : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '调试模式',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: _debugMode ? Theme.of(context).colorScheme.primary : null,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _debugMode
+                              ? '记录详细日志（包括数据分析和年度报告）'
+                              : '仅记录错误信息',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: _debugMode,
+                    onChanged: (value) async {
+                      setState(() {
+                        _debugMode = value;
+                      });
+                      await _configService.saveDebugMode(value);
+                      await logger.setDebugMode(value);
+
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('调试模式已${value ? "开启" : "关闭"}'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 16),
 

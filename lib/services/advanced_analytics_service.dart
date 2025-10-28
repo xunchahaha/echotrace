@@ -5,7 +5,7 @@ import 'analytics_service.dart';
 
 /// 高级分析服务
 /// 
-/// 核心分析维度（多维度排名优化）：
+/// 核心分析维度：
 /// 
 /// 1. 年度挚友榜 - 总互动数排名
 ///    衡量指标：总消息数（我发+对方发）
@@ -759,10 +759,10 @@ class AdvancedAnalyticsService {
           session.username,
           filterYear: _filterYear,
         );
-        
+
         // 计算总消息数
         final totalCount = messagesByDate.values.fold(0, (sum, data) => sum + (data['count'] as int));
-        
+
         // 过滤：消息数少于100条的好友不统计
         if (totalCount < 100) continue;
 
@@ -837,9 +837,9 @@ class AdvancedAnalyticsService {
         for (final entry in sessionMessagesByDate.entries) {
           final dateKey = entry.key;
           final count = entry.value['count'] as int;
-          
+
           messagesByDate[dateKey] = (messagesByDate[dateKey] ?? 0) + count;
-          
+
           // 记录每天和每个好友的消息数
           messagesByDateAndFriend[dateKey] ??= {};
           messagesByDateAndFriend[dateKey]![session.username] = {
@@ -907,6 +907,11 @@ class AdvancedAnalyticsService {
       privateSessions.map((s) => s.username).toList(),
     );
 
+    // 批量获取所有会话的消息日期
+    final allSessionsDates = await _databaseService.getAllPrivateSessionsMessageDates(
+      filterYear: _filterYear,
+    );
+
     int globalMaxStreak = 0;
     String? bestFriendUsername;
     String? bestFriendDisplayName;
@@ -915,18 +920,10 @@ class AdvancedAnalyticsService {
 
     for (final session in privateSessions) {
       try {
-        final messageDates = await _databaseService.getSessionMessageDates(
-          session.username,
-          filterYear: _filterYear,
-        );
+        final dateSet = allSessionsDates[session.username];
+        if (dateSet == null || dateSet.isEmpty) continue;
 
-        if (messageDates.isEmpty) continue;
-
-        // 按日期去重并排序
-        final dateSet = messageDates.map((date) {
-          return '${date.year}-${date.month}-${date.day}';
-        }).toSet();
-
+        // 转换为日期列表并排序
         final dates = dateSet.map((dateStr) {
           final parts = dateStr.split('-');
           return DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));

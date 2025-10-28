@@ -63,16 +63,22 @@ class ResponseTimeAnalyzer {
 
   /// 分析谁回复我的消息最快
   /// [onProgress] 进度回调 (current, total, currentUsername)
+  /// [onLog] 日志回调 (message, level)
   Future<List<ResponseTimeResult>> analyzeWhoRepliesFastest({
     Function(int current, int total, String currentUser)? onProgress,
+    Function(String message, {String level})? onLog,
   }) async {
     onProgress?.call(0, 1, '正在分析响应速度...');
-    
+    onLog?.call('开始调用 DatabaseService.analyzeResponseSpeed (对方回复我)', level: 'debug');
+
     final sqlResults = await _databaseService.analyzeResponseSpeed(
       isMyResponse: false, // 对方回复我
       year: _filterYear,
       onProgress: onProgress,
+      onLog: onLog,
     );
+
+    onLog?.call('DatabaseService.analyzeResponseSpeed 返回 ${sqlResults.length} 条结果', level: 'debug');
 
     final results = sqlResults.map((data) => ResponseTimeResult(
       username: data['username'] as String,
@@ -82,24 +88,31 @@ class ResponseTimeAnalyzer {
       fastestResponseMinutes: data['fastestResponseMinutes'] as double,
       slowestResponseMinutes: data['slowestResponseMinutes'] as double,
     )).toList();
-    
+
     onProgress?.call(1, 1, '分析完成');
-    
+    onLog?.call('转换为 ResponseTimeResult 对象完成，共 ${results.length} 个', level: 'debug');
+
     return results;
   }
 
   /// 分析我回复谁的消息最快
   /// [onProgress] 进度回调 (current, total, currentUsername)
+  /// [onLog] 日志回调 (message, level)
   Future<List<ResponseTimeResult>> analyzeMyFastestReplies({
     Function(int current, int total, String currentUser)? onProgress,
+    Function(String message, {String level})? onLog,
   }) async {
     onProgress?.call(0, 1, '正在分析响应速度...');
-    
+    onLog?.call('开始调用 DatabaseService.analyzeResponseSpeed (我回复对方)', level: 'debug');
+
     final sqlResults = await _databaseService.analyzeResponseSpeed(
       isMyResponse: true, // 我回复对方
       year: _filterYear,
       onProgress: onProgress,
+      onLog: onLog,
     );
+
+    onLog?.call('DatabaseService.analyzeResponseSpeed 返回 ${sqlResults.length} 条结果', level: 'debug');
 
     final results = sqlResults.map((data) => ResponseTimeResult(
       username: data['username'] as String,
@@ -109,9 +122,10 @@ class ResponseTimeAnalyzer {
       fastestResponseMinutes: data['fastestResponseMinutes'] as double,
       slowestResponseMinutes: data['slowestResponseMinutes'] as double,
     )).toList();
-    
+
     onProgress?.call(1, 1, '分析完成');
-    
+    onLog?.call('转换为 ResponseTimeResult 对象完成，共 ${results.length} 个', level: 'debug');
+
     return results;
   }
 }

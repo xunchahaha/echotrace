@@ -269,6 +269,60 @@ class AnnualReportTexts {
   static const responseClosing1 = 'TA总是第一时间给你回应\n这份在意，让人心安';
   static const responseClosing2 = '而对TA的消息，你也总会放下手边的一切\n这份关系，值得被用心回应';
 
+  // ========== 曾经的好朋友 ==========
+  // [显示效果] 页面标题（橙色）
+  static const formerFriendTitle = '曾经的好朋友';
+
+  // [显示效果] 副标题
+  static const formerFriendSubtitle = '这些年来，时间都带我遇见了谁，又留下了些什么?';
+
+  // [显示效果] 开场白前缀
+  // 完整显示："还记得吗，那段时间"
+  static const formerFriendRemember = '还记得吗，那段时间';
+
+  // [显示效果] 中间连接词
+  // 完整显示："还记得吗，那段时间
+  //          张三
+  //          几乎每天都会出现在你的对话框里"
+  static const formerFriendAlmostDaily = '几乎每天都会出现在你的对话框里';
+
+  // [显示效果] 时间描述
+  // 完整显示："从 2023/8/24 到 2024/11/29"
+  static const formerFriendFromDate = '从 ';
+  static const formerFriendToDate = ' 到 ';
+
+  // [显示效果] 持续时间描述
+  // 完整显示："整整 464 天"
+  static const formerFriendWholeDays = '整整 ';
+  static const formerFriendDaysUnit = ' 天';
+
+  // [显示效果] 聊天频率描述
+  // 完整显示："你们聊了 273 天，发了 85640 条消息"
+  static const formerFriendChattedDays = '你们聊了 ';
+  static const formerFriendChattedDaysUnit = ' 天，发了 ';
+  static const formerFriendMessagesUnit = ' 条消息';
+
+  // [显示效果] 转折文案
+  static const formerFriendButNow = '但现在';
+
+  // [显示效果] 后续情况描述
+  // 完整显示："距离那段时光已经过去了 333 天
+  //          你们只发了 81759 条消息
+  //          平均每天 245.52 条"
+  static const formerFriendSinceThen = '距离那段时光已经过去了 ';
+  static const formerFriendOnlySent = '你们只发了 ';
+  static const formerFriendAvgPerDay = '平均每天 ';
+
+  // [显示效果] 底部温馨寄语
+  static const formerFriendClosing = '时间悄无声息地将某些人带到你的生命里\n又将某些人轻轻推向远方';
+
+  // [显示效果] 无数据时的提示
+  static const formerFriendNoData = '暂无数据';
+  static const formerFriendInsufficientData = '聊天记录不足';
+  static const formerFriendInsufficientDataDetail = '所有好友的聊天记录都不足14天\n无法进行分析';
+  static const formerFriendNoQualified = '未找到符合条件的好友';
+  static const formerFriendAllGoodRelations = '所有好友都保持着良好的联系';
+
   // ========== 结束页 ==========
   // [显示效果] 标题后缀
   // 完整显示："2024年的故事" 或 "这段时光的故事"
@@ -288,8 +342,8 @@ class AnnualReportTexts {
   static const endingFriendsUnit = '位好友';
   
   // [显示效果] 两段诗句
-  static const endingPoem1 = '每一段对话\n都是关系生长的轨迹';
-  static const endingPoem2 = '愿未来的日子，依然有人听你分享\n继续用言语，编织属于你们的故事';
+  static const endingPoem1 = '我们总是在向前走，却很少有机会回头看看';
+  static const endingPoem2 = '如果这份小小的报告，能让你想起某个很久没联系的朋友，能让你对当下的陪伴心存感激\n或者能在某个平凡的午后，给你带来一丝微笑和暖意\n那么，这一切就都有了意义';
   
   // [显示效果] 底部爱心符号
   static const endingHeart = '♡';

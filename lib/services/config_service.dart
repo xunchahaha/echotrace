@@ -9,6 +9,7 @@ class ConfigService {
   static const String _keyImageXorKey = 'image_xor_key'; // 图片XOR密钥
   static const String _keyImageAesKey = 'image_aes_key'; // 图片AES密钥
   static const String _keyManualWxid = 'manual_wxid'; // 手动输入的wxid
+  static const String _keyDebugMode = 'debug_mode'; // 调试模式开关
 
   /// 保存解密密钥
   Future<void> saveDecryptKey(String key) async {
@@ -94,6 +95,18 @@ class ConfigService {
     return prefs.getString(_keyManualWxid);
   }
 
+  /// 保存调试模式状态
+  Future<void> saveDebugMode(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyDebugMode, enabled);
+  }
+
+  /// 获取调试模式状态（默认关闭）
+  Future<bool> getDebugMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyDebugMode) ?? false;
+  }
+
   /// 清除所有配置
   Future<void> clearAll() async {
     final prefs = await SharedPreferences.getInstance();
@@ -104,5 +117,6 @@ class ConfigService {
     await prefs.remove(_keyImageXorKey);
     await prefs.remove(_keyImageAesKey);
     await prefs.remove(_keyManualWxid);
+    await prefs.remove(_keyDebugMode);
   }
 }
