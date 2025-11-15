@@ -5,6 +5,7 @@ import '../services/database_service.dart';
 import '../services/analytics_cache_service.dart';
 import '../services/logger_service.dart';
 import '../models/analytics_data.dart';
+import '../utils/string_utils.dart';
 import 'annual_report_display_page.dart';
 
 /// 数据分析页面
@@ -120,6 +121,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
               _loadingStatus = '完成（使用缓存数据）';
               _isLoading = false;
             });
+            await _loadAvatarUrlsForRankings();
             await logger.debug(
               'AnalyticsPage',
               '使用缓存数据完成，总消息数: ${_overallStats?.totalMessages}',
@@ -138,6 +140,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           _loadingStatus = '完成（从缓存加载）';
           _isLoading = false;
         });
+        await _loadAvatarUrlsForRankings();
         await logger.debug(
           'AnalyticsPage',
           '缓存加载完成，总消息数: ${_overallStats?.totalMessages}, 联系人数: ${_allContactRankings?.length}',
@@ -359,6 +362,27 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     }
 
     return topRankings;
+  }
+
+  Future<void> _loadAvatarUrlsForRankings() async {
+    final rankings = _allContactRankings;
+    if (rankings == null || rankings.isEmpty) {
+      if (mounted) {
+        setState(() => _avatarUrls = {});
+      }
+      return;
+    }
+
+    try {
+      final usernames = rankings.map((r) => r.username).toList();
+      final avatarMap = await widget.databaseService.getAvatarUrls(usernames);
+      if (!mounted) return;
+      setState(() {
+        _avatarUrls = avatarMap;
+      });
+    } catch (_) {
+      // 忽略头像获取失败
+    }
   }
 
   @override
@@ -828,24 +852,39 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                   children: _contactRankings!.asMap().entries.map((entry) {
                     final index = entry.key;
                     final ranking = entry.value;
-
                     final avatarUrl = _avatarUrls[ranking.username];
                     return ListTile(
                       key: ValueKey('${ranking.username}_$index'),
                       leading: _AvatarWithRank(
                         avatarUrl: avatarUrl,
                         rank: index + 1,
+                        displayName: ranking.displayName,
                       ),
-                      title: Text(ranking.displayName),
+                      title: Text(
+                        StringUtils.cleanOrDefault(
+                          ranking.displayName,
+                          ranking.username,
+                        ),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyLarge
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
                       subtitle: Text(
                         '发送: ${ranking.sentCount} | 接收: ${ranking.receivedCount}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurface
+                                  .withValues(alpha: 0.6),
+                            ),
                       ),
                       trailing: Text(
                         '${ranking.messageCount}',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.bold),
                       ),
                     );
                   }).toList(),
@@ -879,37 +918,58 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
 class _AvatarWithRank extends StatelessWidget {
   final String? avatarUrl;
   final int rank;
+  final String displayName;
 
-  const _AvatarWithRank({required this.avatarUrl, required this.rank});
+  const _AvatarWithRank({
+    required this.avatarUrl,
+    required this.rank,
+    required this.displayName,
+  });
 
   @override
   Widget build(BuildContext context) {
     final hasAvatar = avatarUrl != null && avatarUrl!.isNotEmpty;
+    final fallbackText =
+        StringUtils.getFirstChar(displayName, defaultChar: '聊');
+
     return Stack(
       clipBehavior: Clip.none,
       children: [
         CircleAvatar(
-          radius: 18,
+          radius: 22,
+          backgroundColor: hasAvatar
+              ? Colors.transparent
+              : Theme.of(context)
+                  .colorScheme
+                  .primary
+                  .withValues(alpha: 0.12),
           backgroundImage: hasAvatar ? NetworkImage(avatarUrl!) : null,
-          child: !hasAvatar
-              ? Text(
-                  rank.toString(),
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                )
-              : null,
+          child: hasAvatar
+              ? null
+              : Text(
+                  fallbackText,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
         ),
         Positioned(
-          bottom: -2,
-          right: -2,
+          bottom: -4,
+          right: -4,
           child: CircleAvatar(
-            radius: 9,
-            backgroundColor: Theme.of(context).colorScheme.primary,
-            child: Text(
-              '$rank',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
+            radius: 10,
+            backgroundColor: Colors.white,
+            child: CircleAvatar(
+              radius: 8,
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              child: Text(
+                '$rank',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),

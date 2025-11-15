@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/app_state.dart';
 import '../services/group_chat_service.dart';
+import '../utils/string_utils.dart';
 import 'group_members_page.dart'; // 导入新组件
 import 'group_ranking_page.dart'; // 导入新组件
 import 'group_active_hours_page.dart'; // <<< 导入新文件
@@ -14,9 +15,7 @@ enum AnalysisFunction {
   memberList, // 群成员查看
   messageRanking, // 群聊发言排行
   activeHours, // 群聊活跃时段
-  topicTrend, // 话题热度趋势 (新增)
-  mediaStats, // 媒体内容统计 (新增)
-  memberProfile, // 群友画像 (新增)
+  mediaStats, // 媒体内容统计
 }
 
 class GroupChatAnalysisPage extends StatefulWidget {
@@ -75,101 +74,6 @@ class _GroupChatAnalysisPageState extends State<GroupChatAnalysisPage>
     _searchAnimationController.dispose();
     _refreshController.dispose();
     super.dispose();
-  }
-
-  void _showAiFeatureNoticeDialog(AnalysisFunction feature) {
-    String featureName = _getFunctionName(feature);
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          title: Row(
-            children: [
-              Icon(Icons.auto_awesome, color: Theme.of(context).primaryColor),
-              const SizedBox(width: 12),
-              Text('$featureName (AI 功能)'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '这是一个高级分析功能，需要借助 AI 模型进行深度计算。',
-                style: Theme.of(context).textTheme.bodyLarge,
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade200),
-                ),
-                child: const Text(
-                  '由于 AI 服务需要付费，本工具暂不直接集成。您可以按照以下步骤，手动使用外部 AI 工具进行分析：',
-                  style: TextStyle(fontSize: 14),
-                ),
-              ),
-              const SizedBox(height: 16),
-              const _StepItem(
-                step: '1',
-                text: '前往「数据导出」页面，选择此群聊并导出为 JSON 或 TXT 格式的聊天记录文件。',
-              ),
-              const SizedBox(height: 12),
-              const _StepItem(
-                step: '2',
-                text: '将导出的文件内容，喂给您选择的 AI 模型（如 ChatGPT, Kimi, 文心一言等）。',
-              ),
-              const SizedBox(height: 16),
-              Text(
-                '您可以向 AI 提出类似这样的问题：',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey.shade700,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                feature == AnalysisFunction.topicTrend
-                    ? '“请分析这份聊天记录的主要话题，并总结每个话题的热度趋势。”'
-                    : '“请基于这份聊天记录，为群里的主要发言成员生成人物画像，分析他们的性格特点和聊天风格。”',
-                style: TextStyle(
-                  fontStyle: FontStyle.italic,
-                  color: Colors.grey.shade600,
-                  fontSize: 13,
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              child: const Text('我明白了'),
-            ),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.ios_share, size: 16),
-              label: const Text('前往导出'),
-              onPressed: () {
-                // TODO: 在这里添加导航到“数据导出”页面的逻辑
-                // 例如，如果您的导航是基于索引的，可以这样做：
-                // context.read<YourNavBarProvider>().selectedIndex = 2; // 假设导出页面是第3个
-                Navigator.of(context).pop(); // 关闭对话框
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('请手动切换到「数据导出」页面。')),
-                );
-              },
-            ),
-          ],
-        );
-      },
-    );
   }
 
   Future<void> _loadGroupChats() async {
@@ -361,39 +265,58 @@ class _GroupChatAnalysisPageState extends State<GroupChatAnalysisPage>
   }
 
   Widget _buildGroupListView() {
-    // ... (这部分代码与上次相同，无需修改) ...
     return ListView.builder(
       itemCount: _filteredGroups.length,
       itemBuilder: (context, index) {
         final group = _filteredGroups[index];
-        return Material(
-          color: _selectedGroup?.username == group.username
-              ? Theme.of(context).primaryColor.withOpacity(0.1)
-              : Colors.transparent,
+        final isSelected = _selectedGroup?.username == group.username;
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           child: InkWell(
+            borderRadius: BorderRadius.circular(12),
             onTap: () => _onGroupSelected(group),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeInOut,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                color: isSelected
+                    ? Theme.of(context)
+                        .colorScheme
+                        .primaryContainer
+                        .withValues(alpha: 0.5)
+                    : Colors.transparent,
+              ),
               child: Row(
                 children: [
-                  CircleAvatar(
-                    backgroundColor: _getGroupColor(group.displayName),
-                    child: const Icon(Icons.group, color: Colors.white),
-                  ),
+                  _buildGroupAvatar(context, group),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          group.displayName,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
+                          StringUtils.cleanOrDefault(
+                            group.displayName,
+                            '未命名群聊',
+                          ),
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(fontWeight: FontWeight.w600),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
+                        const SizedBox(height: 4),
                         Text(
                           '${group.memberCount} 位成员',
-                          style: Theme.of(context).textTheme.bodySmall,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.6),
+                              ),
                         ),
                       ],
                     ),
@@ -447,11 +370,7 @@ class _GroupChatAnalysisPageState extends State<GroupChatAnalysisPage>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            CircleAvatar(
-              radius: 40,
-              backgroundColor: _getGroupColor(_selectedGroup!.displayName),
-              child: const Icon(Icons.group, color: Colors.white, size: 40),
-            ),
+            _buildGroupAvatar(context, _selectedGroup!, radius: 40),
             const SizedBox(height: 16),
             Text(
               _selectedGroup!.displayName,
@@ -487,22 +406,10 @@ class _GroupChatAnalysisPageState extends State<GroupChatAnalysisPage>
                   label: '群聊活跃时段',
                 ),
                 _buildFunctionMenuItem(
-                  // 新功能：话题热度趋势
-                  type: AnalysisFunction.topicTrend,
-                  icon: Icons.show_chart, // 图标：趋势图
-                  label: '话题热度趋势',
-                ),
-                _buildFunctionMenuItem(
                   // 新功能：媒体内容统计
                   type: AnalysisFunction.mediaStats, // <<< 修改后
                   icon: Icons.perm_media_outlined, // 图标：图片/文件集合
                   label: '媒体内容统计',
-                ),
-                _buildFunctionMenuItem(
-                  // 新功能：群友画像
-                  type: AnalysisFunction.memberProfile,
-                  icon: Icons.contact_page_outlined, // 图标：个人报告/名片
-                  label: '群友画像',
                 ),
               ],
             ),
@@ -591,24 +498,6 @@ class _GroupChatAnalysisPageState extends State<GroupChatAnalysisPage>
               AnalysisFunction.mediaStats => GroupMediaStatsContent(
                 groupInfo: _selectedGroup!,
               ),
-
-              AnalysisFunction.topicTrend ||
-              AnalysisFunction.memberProfile => Builder(
-                builder: (context) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    // 如果对话框还未显示，则显示它
-                    if (ModalRoute.of(context)?.isCurrent ?? false) {
-                      _showAiFeatureNoticeDialog(_selectedFunction!);
-                      // 弹窗后自动返回到功能菜单界面，体验更好
-                      setState(() {
-                        _selectedFunction = null;
-                      });
-                    }
-                  });
-                  // 返回一个占位符，因为对话框会覆盖它
-                  return const Center(child: CircularProgressIndicator());
-                },
-              ),
             },
           ),
         ],
@@ -624,12 +513,8 @@ class _GroupChatAnalysisPageState extends State<GroupChatAnalysisPage>
         return '群聊发言排行';
       case AnalysisFunction.activeHours:
         return '群聊活跃时段';
-      case AnalysisFunction.topicTrend:
-        return '话题热度趋势'; // 确保有这一行
       case AnalysisFunction.mediaStats:
-        return '媒体内容统计'; // 确保有这一行
-      case AnalysisFunction.memberProfile:
-        return '群友画像'; // 确保有这一行
+        return '媒体内容统计';
     }
   }
 
@@ -654,48 +539,34 @@ class _GroupChatAnalysisPageState extends State<GroupChatAnalysisPage>
     );
   }
 
-  Color _getGroupColor(String groupName) {
-    // ... (这部分代码与上次相同，无需修改) ...
-    final int hash = groupName.hashCode;
-    final List<Color> colors = [
-      Colors.blue.shade600,
-      Colors.green.shade600,
-      Colors.purple.shade600,
-      Colors.orange.shade600,
-      Colors.red.shade600,
-      Colors.teal.shade600,
-      Colors.indigo.shade600,
-      Colors.pink.shade600,
-    ];
-    return colors[hash.abs() % colors.length];
-  }
-}
 
-class _StepItem extends StatelessWidget {
-  final String step;
-  final String text;
-  const _StepItem({required this.step, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        CircleAvatar(
-          radius: 12,
-          backgroundColor: Theme.of(context).primaryColor,
-          child: Text(
-            step,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 12,
+  Widget _buildGroupAvatar(
+    BuildContext context,
+    GroupChatInfo group, {
+    double radius = 24,
+  }) {
+    final hasAvatar = group.avatarUrl != null && group.avatarUrl!.isNotEmpty;
+    final fallbackText = StringUtils.getFirstChar(
+      group.displayName,
+      defaultChar: '群',
+    );
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: Theme.of(context)
+          .colorScheme
+          .primary
+          .withValues(alpha: hasAvatar ? 0.05 : 0.15),
+      backgroundImage: hasAvatar ? NetworkImage(group.avatarUrl!) : null,
+      child: hasAvatar
+          ? null
+          : Text(
+              fallbackText,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.bold,
+                fontSize: radius / 1.6,
+              ),
             ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(child: Text(text, style: const TextStyle(fontSize: 14))),
-      ],
     );
   }
 }

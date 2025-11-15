@@ -137,6 +137,15 @@ class _SidebarState extends State<Sidebar> with SingleTickerProviderStateMixin {
                         isSelected: appState.currentPage == 'analytics',
                         onTap: () => appState.setCurrentPage('analytics'),
                       ),
+                      _SidebarButton(
+                        icon: Icons.groups_outlined,
+                        label: '群聊分析',
+                        showLabel: _showContent,
+                        isSelected:
+                            appState.currentPage == 'group_chat_analysis',
+                        onTap: () =>
+                            appState.setCurrentPage('group_chat_analysis'),
+                      ),
 
                       _SidebarButton(
                         icon: Icons.file_download_outlined,
@@ -160,14 +169,6 @@ class _SidebarState extends State<Sidebar> with SingleTickerProviderStateMixin {
                         showLabel: _showContent,
                         isSelected: appState.currentPage == 'settings',
                         onTap: () => appState.setCurrentPage('settings'),
-                      ),
-                      // 添加群聊分析菜单
-                      _SidebarButton(
-                        icon: Icons.groups_outlined,
-                        label: '群聊分析',
-                        showLabel: _showContent,
-                        isSelected: appState.currentPage == 'group_chat_analysis',
-                        onTap: () => appState.setCurrentPage('group_chat_analysis'),
                       ),
                     ],
                   );

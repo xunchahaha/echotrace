@@ -15,14 +15,20 @@ const Set<String> _chineseStopwords = {
   '不是', '可以', '这么', '那么', '还有', '如果', '的话', '可能', '出来',
   '还是', '一样', '这样', '那样', '自己', '之后', '之前', '时候',
   '东西', '什么样', '卧槽', '我靠', '淦',
-  // 符号类可以移除，因为我们的正则不会提取它们
 };
 
 class GroupChatInfo {
   final String username;
   final String displayName;
   final int memberCount;
-  GroupChatInfo({required this.username, required this.displayName, required this.memberCount});
+  final String? avatarUrl;
+
+  GroupChatInfo({
+    required this.username,
+    required this.displayName,
+    required this.memberCount,
+    this.avatarUrl,
+  });
 }
 
 class GroupMember {
@@ -179,20 +185,30 @@ class GroupChatService {
     }
   }
 
-  // ... 其他方法 (getGroupChats, getGroupMembers, etc.) 保持不变 ...
-  // (将您之前的其他方法代码复制到这里)
   Future<List<GroupChatInfo>> getGroupChats() async {
     final sessions = await _databaseService.getSessions();
     final groupSessions = sessions.where((s) => s.isGroup).toList();
     final List<GroupChatInfo> result = [];
-    final displayNames = await _databaseService.getDisplayNames(groupSessions.map((s) => s.username).toList());
+    final usernames = groupSessions.map((s) => s.username).toList();
+    final displayNames = await _databaseService.getDisplayNames(usernames);
+
+    Map<String, String> avatarUrls = {};
+    try {
+      avatarUrls = await _databaseService.getAvatarUrls(usernames);
+    } catch (e) {
+      // 忽略头像获取错误
+    }
+
     for (final session in groupSessions) {
       final memberCount = await _getGroupMemberCount(session.username);
-      result.add(GroupChatInfo(
-        username: session.username,
-        displayName: displayNames[session.username] ?? session.username,
-        memberCount: memberCount,
-      ));
+      result.add(
+        GroupChatInfo(
+          username: session.username,
+          displayName: displayNames[session.username] ?? session.username,
+          memberCount: memberCount,
+          avatarUrl: avatarUrls[session.username],
+        ),
+      );
     }
     result.sort((a, b) => b.memberCount.compareTo(a.memberCount));
     return result;
