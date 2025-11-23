@@ -65,23 +65,86 @@ class Message {
 
   /// 从数据库Map创建Message对象
   factory Message.fromMap(Map<String, dynamic> map, {String? myWxid}) {
-    final localType = map['local_type'] ?? 0;
-    final messageContent = _safeStringFromMap(map, 'message_content');
+    int _intValue(List<String> keys, {int defaultValue = 0}) {
+      for (final key in keys) {
+        if (map.containsKey(key) && map[key] != null) {
+          final v = map[key];
+          if (v is int) return v;
+          if (v is num) return v.toInt();
+          final parsed = int.tryParse(v.toString());
+          if (parsed != null) return parsed;
+        }
+      }
+      return defaultValue;
+    }
+
+    int? _nullableIntValue(List<String> keys) {
+      for (final key in keys) {
+        if (map.containsKey(key) && map[key] != null) {
+          final v = map[key];
+          if (v is int) return v;
+          if (v is num) return v.toInt();
+          final parsed = int.tryParse(v.toString());
+          if (parsed != null) return parsed;
+        }
+      }
+      return null;
+    }
+
+    String _stringValue(List<String> keys) {
+      for (final key in keys) {
+        if (map.containsKey(key) && map[key] != null) {
+          return _safeStringFromMap(map, key);
+        }
+      }
+      return '';
+    }
+
+    final localType = _intValue(['local_type', 'type', 'localType']);
+    final messageContent = _stringValue([
+      'message_content',
+      'WCDB_CT_message_content',
+      'content',
+    ]);
 
     // 步骤1：处理compress_content - 检查是否为blob格式
     String actualContent = '';
-    final compressContentRaw = map['compress_content'];
-
-    if (compressContentRaw is Uint8List) {
-      // 是blob格式，需要解压
-      actualContent = _decodeBinaryContent(compressContentRaw);
-    } else if (compressContentRaw is String && compressContentRaw.isNotEmpty) {
-      // 是字符串格式，直接使用
-      actualContent = compressContentRaw;
-    } else if (messageContent.isNotEmpty) {
-      // compress_content为空，使用message_content
-      actualContent = messageContent;
+    String _decodeMaybeCompressed(dynamic raw) {
+      if (raw is Uint8List) {
+        return _decodeBinaryContent(raw);
+      }
+      if (raw is String && raw.isNotEmpty) {
+        // hex -> bytes -> 解压
+        if (_looksLikeHex(raw)) {
+          final bytes = _hexToBytes(raw);
+          if (bytes.isNotEmpty) {
+            return _decodeBinaryContent(Uint8List.fromList(bytes));
+          }
+        }
+        // base64 -> bytes -> 解压
+        if (_looksLikeBase64(raw)) {
+          try {
+            final bytes = base64Decode(raw);
+            return _decodeBinaryContent(Uint8List.fromList(bytes));
+          } catch (_) {}
+        }
+        return raw;
+      }
+      return '';
     }
+
+    final compressContentRaw = map['compress_content'] ??
+        map['WCDB_CT_compress_content'] ??
+        map['WCDB_CT_message_content'];
+
+    actualContent = _decodeMaybeCompressed(compressContentRaw);
+    if (actualContent.isEmpty && messageContent.isNotEmpty) {
+      actualContent = _decodeMaybeCompressed(messageContent);
+    }
+
+    final senderUsername = _safeStringFromMap(map, 'sender_username');
+    final senderDisplayName = _safeStringFromMap(map, 'sender_display_name');
+    int? isSendVal = _readIsSend(map);
 
     // 步骤2：根据localType解析内容
     final parsedContent = _parseMessageContent(
@@ -89,6 +152,10 @@ class Message {
       localType,
       messageContent,
       myWxid,
+      senderUsername: senderUsername.isEmpty ? null : senderUsername,
+      senderDisplayName:
+          senderDisplayName.isEmpty ? null : senderDisplayName,
+      isSendFlag: isSendVal ?? _nullableIntValue(['is_send', 'isSend']),
     );
 
     // 提取图片MD5（如果是图片消息）
@@ -103,30 +170,51 @@ class Message {
       patInfo = XmlMessageParser.parsePatMessageInfo(actualContent);
     }
 
+    // 系统/拍一拍消息不归属于任何一方，避免被归类为自己发送
+    if (localType == 10000 || localType == 266287972401) {
+      isSendVal = null;
+    }
+
+    // 额外的 is_send 判断：如果 sender_username 与 myWxid 相同，则视为我发送
+    if (isSendVal == null && myWxid != null && myWxid.isNotEmpty) {
+      if (senderUsername.isNotEmpty && senderUsername == myWxid) {
+        isSendVal = 1;
+      }
+    }
+
     return Message(
-      localId: map['local_id'] ?? 0,
-      serverId: map['server_id'] ?? 0,
+      localId: _intValue(['local_id']),
+      serverId: _intValue(['server_id']),
       localType: localType,
-      sortSeq: map['sort_seq'] ?? 0,
-      realSenderId: map['real_sender_id'] ?? 0,
-      createTime: map['create_time'] ?? 0,
-      status: map['status'] ?? 0,
-      uploadStatus: map['upload_status'] ?? 0,
-      downloadStatus: map['download_status'] ?? 0,
-      serverSeq: map['server_seq'] ?? 0,
-      originSource: map['origin_source'] ?? 0,
-      source: _safeStringFromMap(map, 'source'),
+      sortSeq: _intValue(['sort_seq']),
+      realSenderId: _intValue(['real_sender_id']),
+      createTime: _intValue(['create_time']),
+      status: _intValue(['status']),
+      uploadStatus: _intValue(['upload_status']),
+      downloadStatus: _intValue(['download_status']),
+      serverSeq: _intValue(['server_seq']),
+      originSource: _intValue(['origin_source', 'WCDB_CT_source']),
+      source: _stringValue(['source', 'WCDB_CT_source']),
       messageContent: messageContent,
       compressContent: actualContent, // 存储解压后的内容
-      packedInfoData: map['packed_info_data'] != null
-          ? (map['packed_info_data'] is Uint8List
-                ? map['packed_info_data'].cast<int>()
-                : List<int>.from(map['packed_info_data']))
-          : [],
-      isSend: _readIsSend(map),
-      senderUsername: _safeStringFromMap(map, 'sender_username').isEmpty
-          ? null
-          : _safeStringFromMap(map, 'sender_username'),
+      packedInfoData: () {
+        final raw = map['packed_info_data'];
+        if (raw == null) return <int>[];
+        if (raw is Uint8List) return raw.cast<int>();
+        if (raw is List<int>) return raw;
+        if (raw is List) return raw.map((e) => int.tryParse(e.toString()) ?? 0).toList();
+        if (raw is String) {
+          try {
+            final decoded = jsonDecode(raw);
+            if (decoded is List) {
+              return decoded.map((e) => int.tryParse(e.toString()) ?? 0).toList();
+            }
+          } catch (_) {}
+        }
+        return <int>[];
+      }(),
+      isSend: isSendVal,
+      senderUsername: senderUsername.isEmpty ? null : senderUsername,
       imageMd5: imageMd5,
       myWxid: myWxid,
       patInfo: patInfo,
@@ -151,8 +239,11 @@ class Message {
     String content,
     int localType,
     String originalMessageContent,
-    String? myWxid,
-  ) {
+    String? myWxid, {
+    String? senderUsername,
+    String? senderDisplayName,
+    int? isSendFlag,
+  }) {
     // 调试输出 - 特别关注74614
     final isTargetMessage =
         kDebugMode && (localType == 244813135921 || content.length > 10000);
@@ -226,7 +317,14 @@ class Message {
       case 10000: // 系统消息
         if (decodedContent.contains('revokemsg')) {
           // 处理撤回消息
-          return _parseRevokeMessage(decodedContent, myWxid);
+          return _parseRevokeMessage(
+            decodedContent,
+            myWxid,
+            senderUsername: senderUsername,
+            senderDisplayName: senderDisplayName,
+            isSendFlag: isSendFlag,
+            isSystemCenter: true,
+          );
         }
         return decodedContent.isNotEmpty ? decodedContent : '[系统消息]';
 
@@ -330,6 +428,29 @@ class Message {
     return '[未知消息类型($localType)]';
   }
 
+  static bool _looksLikeHex(String s) {
+    if (s.length % 2 != 0) return false;
+    final hexRe = RegExp(r'^[0-9a-fA-F]+$');
+    return hexRe.hasMatch(s);
+  }
+
+  static bool _looksLikeBase64(String s) {
+    if (s.length % 4 != 0) return false;
+    final b64 = RegExp(r'^[A-Za-z0-9+/=]+$');
+    return b64.hasMatch(s);
+  }
+
+  static List<int> _hexToBytes(String s) {
+    final out = <int>[];
+    for (int i = 0; i < s.length; i += 2) {
+      final byteStr = s.substring(i, i + 2);
+      final v = int.tryParse(byteStr, radix: 16);
+      if (v == null) return <int>[];
+      out.add(v);
+    }
+    return out;
+  }
+
   /// HTML实体解码
   static String _decodeHtmlEntities(String input) {
     if (input.isEmpty) return input;
@@ -403,9 +524,29 @@ class Message {
   }
 
   /// 解析撤回消息
-  static String _parseRevokeMessage(String xml, String? myWxid) {
+  static String _parseRevokeMessage(
+    String xml,
+    String? myWxid, {
+    String? senderUsername,
+    String? senderDisplayName,
+    int? isSendFlag,
+    bool isSystemCenter = false,
+  }) {
     try {
-      return XmlMessageParser.parseRevokeMessage(xml, myWxid, null, null) ??
+      final resolvedSender = isSystemCenter
+          ? null
+          : senderUsername ??
+              ((isSendFlag != null && isSendFlag == 1) ? myWxid : null);
+      final resolvedDisplayName = isSystemCenter
+          ? null
+          : (senderDisplayName?.isNotEmpty == true ? senderDisplayName : null);
+
+      return XmlMessageParser.parseRevokeMessage(
+            xml,
+            myWxid,
+            resolvedSender,
+            resolvedDisplayName ?? resolvedSender,
+          ) ??
           '[撤回消息]';
     } catch (e) {
       return '[撤回消息]';
@@ -457,7 +598,7 @@ class Message {
             final decompressed = ZstdCodec().decode(data);
             return utf8.decode(decompressed, allowMalformed: true);
           } catch (e) {
-            // zstd解压失败
+            // zstd解压失败，继续尝试其它方式
           }
         }
       }
@@ -650,6 +791,9 @@ class Message {
 
   /// 是否为系统消息
   bool get isSystemMessage => localType == 10000;
+
+  /// 系统类消息（包括拍一拍等应居中显示的提示）
+  bool get isSystemLike => localType == 10000 || localType == 266287972401;
 
   /// 是否为压缩内容
   bool get isCompressed => compressContent.isNotEmpty;

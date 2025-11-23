@@ -11,6 +11,7 @@ class ChatSessionItem extends StatelessWidget {
   final bool isSelected;
   final VoidCallback onTap;
   final String? avatarUrl;
+  final bool enableAvatarFade;
 
   const ChatSessionItem({
     super.key,
@@ -18,6 +19,7 @@ class ChatSessionItem extends StatelessWidget {
     required this.isSelected,
     required this.onTap,
     this.avatarUrl,
+    this.enableAvatarFade = true,
   });
 
   /// 安全获取头像文本
@@ -278,6 +280,10 @@ class ChatSessionItem extends StatelessWidget {
                 if (avatarUrl != null && avatarUrl!.isNotEmpty)
                   CachedNetworkImage(
                     imageUrl: avatarUrl!,
+                    fadeInDuration:
+                        enableAvatarFade ? const Duration(milliseconds: 200) : Duration.zero,
+                    fadeOutDuration:
+                        enableAvatarFade ? const Duration(milliseconds: 200) : Duration.zero,
                     imageBuilder: (context, imageProvider) => CircleAvatar(
                       radius: 24,
                       backgroundColor: Theme.of(

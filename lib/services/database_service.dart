@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
@@ -8,20 +9,21 @@ import '../models/message.dart';
 import '../models/contact.dart';
 import '../models/contact_record.dart';
 import '../models/chat_session.dart';
-import 'wechat_vfs_native.dart';
+import 'wechat_wcdb_native.dart';
 import 'logger_service.dart';
 import '../utils/path_utils.dart';
 
 /// 数据库读取模式
 enum DatabaseMode {
   decrypted, // 使用解密后的数据库（备份模式）
-  realtime, // 实时读取加密数据库（VFS拦截模式）
+  realtime, // 实时读取加密数据库（WCDB）
 }
 
 /// 数据库操作服务
 class DatabaseService {
   // 数据库模式
   DatabaseMode _mode = DatabaseMode.decrypted;
+  bool _isClosing = false;
 
   // 独立的数据库连接：会话/联系人 和 消息
   static Database? _sessionDb;
@@ -33,8 +35,19 @@ class DatabaseService {
   String? _contactDbPath;
   String? _currentAccountWxid;
 
+  // 实时模式下，使用 WCDB DLL 的账号句柄
+  int? _wcdbHandle;
+
+  // 运行中的实时原生调用计数
+  int _activeWcdbOps = 0;
+
   // 数据库工厂（用于 Isolate 中避免全局修改）
   DatabaseFactory? _dbFactory;
+
+  // 数据库变更流（用于通知 UI 避免轮询）
+  final StreamController<void> _dbChangeController =
+      StreamController<void>.broadcast();
+  StreamSubscription<FileSystemEvent>? _dbWatchSub;
 
   // 缓存的消息数据库连接
   final Map<String, Database> _cachedMessageDbs = {};
@@ -43,6 +56,9 @@ class DatabaseService {
 
   /// 获取当前数据库路径
   String? get dbPath => _sessionDbPath;
+
+  /// 数据库变更通知（用于 UI 监听变化）
+  Stream<void> get databaseChangeStream => _dbChangeController.stream;
 
   /// 初始化数据库
   Future<void> initialize({DatabaseFactory? factory}) async {
@@ -60,6 +76,10 @@ class DatabaseService {
     String dbPath, {
     DatabaseFactory? factory,
   }) async {
+    // 若当前是实时模式，先关闭实时句柄
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      await close();
+    }
     try {
       // 规范化路径，支持中文和空格
       final normalizedPath = PathUtils.normalizeDatabasePath(dbPath);
@@ -107,6 +127,8 @@ class DatabaseService {
       _sessionDbPath = normalizedPath;
       _contactDbPath = null;
       _currentAccountWxid = _extractWxidFromPath(normalizedPath);
+      _wcdbHandle = null;
+      _stopRealtimeWatcher();
 
       await logger.info(
         'DatabaseService',
@@ -127,6 +149,10 @@ class DatabaseService {
     String hexKey, {
     DatabaseFactory? factory,
   }) async {
+    // 若已在实时模式，先关闭现有句柄，避免重复打开导致 native 崩溃
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      await close();
+    }
     try {
       // 规范化路径，支持中文和空格
       final normalizedPath = PathUtils.normalizeDatabasePath(dbPath);
@@ -158,21 +184,34 @@ class DatabaseService {
         _sessionDb = null;
       }
 
-      // 使用真正的VFS拦截打开加密数据库
-      // 在SQLite文件系统层面拦截xRead操作，实时解密数据页
-      _sessionDb = await WeChatVFSNative.openEncryptedDatabase(
-        normalizedPath,
-        hexKey,
-      );
+      // 通过 WCDB DLL 打开实时加密数据库
+      final handle = WeChatWCDBNative.openAccount(normalizedPath, hexKey);
+      if (handle == null || handle <= 0) {
+        await logger.error(
+          'DatabaseService',
+          'WCDB DLL 打开实时数据库失败',
+        );
+        // 拉取原生日志辅助定位
+        final nativeLogs = WeChatWCDBNative.getNativeLogs();
+        if (nativeLogs.isNotEmpty) {
+          await logger.debug(
+            'DatabaseService',
+            'WCDB原生日志: ${nativeLogs.take(10).join(" | ")}',
+          );
+        }
+        throw Exception('WCDB 实时数据库连接失败');
+      }
 
+      _wcdbHandle = handle;
       _mode = DatabaseMode.realtime;
       _sessionDbPath = normalizedPath;
       _contactDbPath = null;
       _currentAccountWxid = _extractWxidFromPath(normalizedPath);
+      _startRealtimeWatcher();
 
       await logger.info(
         'DatabaseService',
-        '成功连接实时加密数据库，模式: ${_mode.name}, 当前账号wxid: $_currentAccountWxid',
+        '成功连接实时加密数据库（WCDB DLL），模式: ${_mode.name}, 当前账号wxid: $_currentAccountWxid',
       );
     } catch (e, stackTrace) {
       await logger.error('DatabaseService', '连接实时加密数据库失败', e, stackTrace);
@@ -183,6 +222,54 @@ class DatabaseService {
   /// 获取当前使用的数据库工厂
   DatabaseFactory get _currentFactory => _dbFactory ?? databaseFactory;
 
+  /// 包装实时模式的原生调用，便于关闭时等待全部完成
+  Future<T> _withWcdbOp<T>(Future<T> Function() action) async {
+    if (_isClosing) {
+      throw Exception('数据库正在关闭');
+    }
+    _activeWcdbOps++;
+    try {
+      return await action();
+    } finally {
+      _activeWcdbOps--;
+    }
+  }
+
+  /// 监听数据库文件变更，避免定时轮询
+  void _startRealtimeWatcher() {
+    _stopRealtimeWatcher();
+    final path = _sessionDbPath;
+    if (path == null) return;
+
+    try {
+      final file = File(path);
+      if (!file.existsSync()) return;
+      final dir = file.parent;
+      _dbWatchSub = dir.watch(recursive: true).listen(
+        (event) {
+          final p = event.path.toLowerCase();
+          if (p.endsWith('.db') ||
+              p.endsWith('.db-wal') ||
+              p.endsWith('.db-shm') ||
+              p.contains('message_') ||
+              p.contains('session')) {
+            _dbChangeController.add(null);
+          }
+        },
+        onError: (_) => _stopRealtimeWatcher(),
+      );
+      // 初次连接也触发一次，确保 UI 能立即同步
+      _dbChangeController.add(null);
+    } catch (_) {
+      _stopRealtimeWatcher();
+    }
+  }
+
+  void _stopRealtimeWatcher() {
+    _dbWatchSub?.cancel();
+    _dbWatchSub = null;
+  }
+
   /// 获取当前数据库模式
   DatabaseMode get mode => _mode;
 
@@ -191,6 +278,80 @@ class DatabaseService {
 
   /// 获取会话列表
   Future<List<ChatSession>> getSessions() async {
+    // 实时模式：通过 WCDB DLL 获取会话
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      try {
+        return await _withWcdbOp(() async {
+          await logger.info('DatabaseService', '实时模式：通过WCDB DLL获取会话列表');
+          final maps = await compute<int, List<Map<String, dynamic>>>(
+            _wcdbGetSessions,
+            _wcdbHandle!,
+          );
+        await logger.info(
+          'DatabaseService',
+          '实时模式：DLL返回 ${maps.length} 条原始会话记录',
+        );
+        if (maps.isEmpty) {
+          final nativeLogs = WeChatWCDBNative.getNativeLogs();
+          if (nativeLogs.isNotEmpty) {
+            await logger.debug(
+              'DatabaseService',
+              '原生日志: ${nativeLogs.take(10).join(" | ")}',
+            );
+          }
+        }
+        if (maps.isNotEmpty) {
+          final sampleSize = maps.length > 3 ? 3 : maps.length;
+          for (var i = 0; i < sampleSize; i++) {
+            final row = maps[i];
+            await logger.debug(
+              'DatabaseService',
+              '实时模式：会话样本$i keys=${row.keys.toList()} values=${row}',
+            );
+          }
+        }
+
+        final allSessions = maps.map((map) => ChatSession.fromMap(map)).toList();
+
+        final filteredSessions = allSessions.where((session) {
+          final username = session.username;
+          final shouldKeep =
+              username.contains('@chatroom') ||
+              (username.startsWith('wxid_') && !username.contains('@')) ||
+              (!username.contains('@kefu.openim') &&
+                  !username.contains('service_') &&
+                  !username.startsWith('gh_') &&
+                  !username.contains('@openim'));
+          return shouldKeep;
+        }).toList();
+
+        // 填充显示名（从联系人数据库获取）
+        try {
+          final names = WeChatWCDBNative.getDisplayNames(
+            _wcdbHandle!,
+            filteredSessions.map((e) => e.username).toList(),
+          );
+          for (final s in filteredSessions) {
+            final n = names[s.username];
+            if (n != null && n.isNotEmpty) {
+              s.displayName = n;
+            }
+          }
+        } catch (_) {}
+
+          await logger.info(
+            'DatabaseService',
+            '实时模式：过滤后剩余 ${filteredSessions.length} 个会话',
+          );
+          return filteredSessions;
+        });
+      } catch (e, stackTrace) {
+        await logger.error('DatabaseService', '实时模式获取会话列表失败', e, stackTrace);
+        throw Exception('获取会话列表失败: $e');
+      }
+    }
+
+    // 备份模式：沿用原有 sqflite 逻辑
     final db = _currentDb;
     if (db == null) {
       await logger.error('DatabaseService', '获取会话列表失败：数据库未连接');
@@ -339,12 +500,13 @@ class DatabaseService {
       );
 
       try {
-        final hasTypeColumn =
-            await _hasTableColumn(contactDb, 'contact', 'type');
-        final chatroomMembers =
-            await _loadChatroomMemberUsernames(contactDb);
-        final knownStrangers =
-            await _loadKnownStrangerUsernames(contactDb);
+        final hasTypeColumn = await _hasTableColumn(
+          contactDb,
+          'contact',
+          'type',
+        );
+        final chatroomMembers = await _loadChatroomMemberUsernames(contactDb);
+        final knownStrangers = await _loadKnownStrangerUsernames(contactDb);
 
         final whereClause = includeDeleted ? null : 'delete_flag = 0';
         final contactRows = await contactDb.query(
@@ -424,9 +586,9 @@ class DatabaseService {
 
       final contacts = contactMap.values.toList()
         ..sort(
-          (a, b) => a.contact.displayName
-              .toLowerCase()
-              .compareTo(b.contact.displayName.toLowerCase()),
+          (a, b) => a.contact.displayName.toLowerCase().compareTo(
+            b.contact.displayName.toLowerCase(),
+          ),
         );
 
       return contacts;
@@ -442,6 +604,67 @@ class DatabaseService {
     int limit = 50,
     int offset = 0,
   }) async {
+    // 实时模式：通过 WCDB DLL 直接获取消息
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      try {
+        return await _withWcdbOp(() async {
+        await logger.info(
+          'DatabaseService',
+          '实时模式：通过WCDB DLL获取消息，sessionId=$sessionId, limit=$limit, offset=$offset',
+        );
+        final rows = await compute<Map<String, dynamic>,
+            List<Map<String, dynamic>>>(
+          _wcdbGetMessages,
+          {
+            'handle': _wcdbHandle!,
+            'username': sessionId,
+            'limit': limit,
+            'offset': offset,
+          },
+        );
+        if (rows.isEmpty) {
+          final nativeLogs = WeChatWCDBNative.getNativeLogs();
+          if (nativeLogs.isNotEmpty) {
+            await logger.debug(
+              'DatabaseService',
+              '原生日志(消息查询): ${nativeLogs.take(10).join(" | ")}',
+            );
+          }
+        } else {
+          final sampleSize = rows.length > 3 ? 3 : rows.length;
+          for (int i = 0; i < sampleSize; i++) {
+            await logger.debug(
+              'DatabaseService',
+              '消息样本$i keys=${rows[i].keys.toList()} raw_time=${rows[i]['create_time'] ?? rows[i]['sort_seq']} sort_seq=${rows[i]['sort_seq']} local_id=${rows[i]['local_id']} server_id=${rows[i]['server_id']}',
+            );
+          }
+        }
+        final messages = rows
+            .map(
+              (map) =>
+                  Message.fromMap(map, myWxid: _currentAccountWxid ?? ''),
+            )
+            .toList();
+        await logger.info(
+          'DatabaseService',
+          '实时模式：消息映射完成 rows=${rows.length} messages=${messages.length}',
+        );
+        if (messages.isNotEmpty) {
+          final first = messages.first;
+          final last = messages.length > 1 ? messages.last : messages.first;
+          await logger.debug(
+            'DatabaseService',
+            '消息映射时间范围: first=${first.createTime} sortSeq=${first.sortSeq} serverSeq=${first.serverSeq} | last=${last.createTime} sortSeq=${last.sortSeq} serverSeq=${last.serverSeq}',
+          );
+        }
+          return messages;
+        });
+      } catch (e, stackTrace) {
+        await logger.error('DatabaseService', '实时模式获取消息失败', e, stackTrace);
+        throw Exception('获取消息列表失败: $e');
+      }
+    }
+
     if (_sessionDb == null) {
       await logger.error('DatabaseService', '获取消息列表失败：数据库未连接');
       throw Exception('数据库未连接');
@@ -896,6 +1119,16 @@ class DatabaseService {
 
   /// 获取会话的消息总数
   Future<int> getMessageCount(String sessionId) async {
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      return _withWcdbOp(() async {
+        try {
+          return WeChatWCDBNative.getMessageCount(_wcdbHandle!, sessionId);
+        } catch (e) {
+          return 0;
+        }
+      });
+    }
+
     if (_sessionDb == null) {
       throw Exception('数据库未连接');
     }
@@ -1059,9 +1292,7 @@ class DatabaseService {
     String tableName,
   ) async {
     try {
-      final pragmaRows = await db.rawQuery(
-        "PRAGMA table_info('$tableName')",
-      );
+      final pragmaRows = await db.rawQuery("PRAGMA table_info('$tableName')");
       final columnNames = pragmaRows
           .map((row) => (row['name'] as String?)?.toLowerCase() ?? '')
           .toSet();
@@ -1072,10 +1303,7 @@ class DatabaseService {
         hasCreateTime: hasCreateTime,
       );
     } catch (e) {
-      return const _MessageTableSchema(
-        hasSortSeq: false,
-        hasCreateTime: true,
-      );
+      return const _MessageTableSchema(hasSortSeq: false, hasCreateTime: true);
     }
   }
 
@@ -1113,10 +1341,7 @@ class DatabaseService {
         }
       }
     } catch (e) {
-      await logger.debug(
-        'DatabaseService',
-        '检查数据表列失败: $tableName.$columnName',
-      );
+      await logger.debug('DatabaseService', '检查数据表列失败: $tableName.$columnName');
     }
     return false;
   }
@@ -1180,10 +1405,7 @@ class DatabaseService {
         }
       }
     } catch (e) {
-      await logger.debug(
-        'DatabaseService',
-        '扫描群聊成员表失败: $e',
-      );
+      await logger.debug('DatabaseService', '扫描群聊成员表失败: $e');
     }
 
     return members;
@@ -1209,10 +1431,7 @@ class DatabaseService {
         }
       }
     } catch (e) {
-      await logger.debug(
-        'DatabaseService',
-        '读取 stranger 表失败或不存在: $e',
-      );
+      await logger.debug('DatabaseService', '读取 stranger 表失败或不存在: $e');
     }
     return strangers;
   }
@@ -1317,8 +1536,10 @@ class DatabaseService {
     if (lower.contains('@chatroom')) return false;
     if (lower.startsWith('wxid_')) return true;
     if (lower.startsWith('wx') && lower.length >= 6) return true;
-    final simplePattern =
-        RegExp(r'^[a-z0-9][a-z0-9_\-]{4,}$', caseSensitive: false);
+    final simplePattern = RegExp(
+      r'^[a-z0-9][a-z0-9_\-]{4,}$',
+      caseSensitive: false,
+    );
     return simplePattern.hasMatch(username);
   }
 
@@ -1337,13 +1558,15 @@ class DatabaseService {
     }
 
     final isChatroom =
-        username.contains('@chatroom') || contact.username.contains('@chatroom');
+        username.contains('@chatroom') ||
+        contact.username.contains('@chatroom');
 
     if (isChatroom) {
       return ContactRecognitionSource.chatroomParticipant;
     }
 
-    final isOfficialCandidate = contact.isOfficialAccount ||
+    final isOfficialCandidate =
+        contact.isOfficialAccount ||
         username.startsWith('gh_') ||
         contact.verifyFlag != 0 ||
         (hasTypeColumn && (contact.type & 0x4) != 0);
@@ -1386,7 +1609,8 @@ class DatabaseService {
     }
 
     if (_currentAccountWxid != null &&
-        normalizedUsername == _normalizeUsernameForLookup(_currentAccountWxid!)) {
+        normalizedUsername ==
+            _normalizeUsernameForLookup(_currentAccountWxid!)) {
       return ContactRecognitionSource.friend;
     }
 
@@ -2298,25 +2522,52 @@ class DatabaseService {
 
   /// 关闭数据库连接
   Future<void> close() async {
+    if (_isClosing) return;
+    _isClosing = true;
     await logger.info('DatabaseService', '开始关闭数据库连接...');
 
     // 先清理缓存的数据库连接
     await clearDatabaseCache();
     await logger.info('DatabaseService', '已清理缓存的数据库连接');
+    _stopRealtimeWatcher();
 
-    // 如果是实时模式，需要清理VFS资源
-    if (_mode == DatabaseMode.realtime &&
-        _sessionDbPath != null &&
-        _sessionDb != null) {
+    // 如果有实时调用在运行，等待它们结束，避免关闭句柄时崩溃
+    if (_mode == DatabaseMode.realtime && _activeWcdbOps > 0) {
+      await logger.info(
+        'DatabaseService',
+        '等待 ${_activeWcdbOps} 个实时调用完成后再关闭...',
+      );
+      int waitedMs = 0;
+      while (_activeWcdbOps > 0) {
+        await Future.delayed(const Duration(milliseconds: 100));
+        waitedMs += 100;
+        if (waitedMs % 1000 == 0) {
+          await logger.info(
+            'DatabaseService',
+            '仍在等待实时调用结束，剩余: $_activeWcdbOps，已等待 ${waitedMs}ms',
+          );
+        }
+      }
+      await logger.info(
+        'DatabaseService',
+        '实时调用已全部结束，继续关闭',
+      );
+    }
+
+    // 实时模式：关闭 WCDB 账号句柄
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      _wcdbHandle = null;
+      _mode = DatabaseMode.decrypted; // 切回默认，避免并发调用实时分支
       try {
-        await logger.info('DatabaseService', '关闭实时加密数据库: $_sessionDbPath');
-        await WeChatVFSNative.closeEncryptedDatabase(
-          _sessionDb!,
-          _sessionDbPath!,
+        await logger.info(
+          'DatabaseService',
+          '关闭实时加密数据库（WCDB DLL）: $_sessionDbPath',
         );
-        await logger.info('DatabaseService', '实时加密数据库已关闭');
+        // 避免在 closeAccount 内部 abort，直接执行全局 shutdown（会释放句柄）
+        WeChatWCDBNative.shutdown();
+        await logger.info('DatabaseService', 'WCDB 原生库已 shutdown');
       } catch (e) {
-        await logger.warning('DatabaseService', '关闭实时加密数据库时出错（可忽略）', e);
+        await logger.warning('DatabaseService', '关闭WCDB账号时出错（可忽略）', e);
       }
       _sessionDb = null;
     } else if (_sessionDb != null) {
@@ -2347,10 +2598,12 @@ class DatabaseService {
     await Future.delayed(const Duration(milliseconds: 500));
     await logger.info('DatabaseService', '数据库连接已完全关闭');
     _contactDbPath = null;
+    _isClosing = false;
   }
 
   /// 检查数据库是否已连接
-  bool get isConnected => _sessionDb != null;
+  bool get isConnected =>
+      _mode == DatabaseMode.realtime ? _wcdbHandle != null : _sessionDb != null;
 
   /// 当前账户 wxid
   String? get currentAccountWxid => _currentAccountWxid;
@@ -2379,7 +2632,22 @@ class DatabaseService {
 
   /// 批量获取联系人显示名称（remark > nick_name > alias > username）
   Future<Map<String, String>> getDisplayNames(List<String> usernames) async {
-    if (_sessionDb == null || usernames.isEmpty) {
+    if (usernames.isEmpty) {
+      return {};
+    }
+
+    // 实时模式：通过 WCDB DLL 获取展示名
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      return _withWcdbOp(() async {
+        try {
+          return WeChatWCDBNative.getDisplayNames(_wcdbHandle!, usernames);
+        } catch (e) {
+          return {for (final u in usernames) u: u};
+        }
+      });
+    }
+
+    if (_sessionDb == null) {
       return {};
     }
 
@@ -2411,10 +2679,7 @@ class DatabaseService {
           return {};
         }
 
-        void assignDisplayName(
-          String dbUsername,
-          String displayName,
-        ) {
+        void assignDisplayName(String dbUsername, String displayName) {
           result[dbUsername] = displayName;
           final canonical = _normalizeUsernameForLookup(dbUsername);
           if (canonical != dbUsername) {
@@ -2433,16 +2698,15 @@ class DatabaseService {
           List<String> targetUsernames,
         ) async {
           if (targetUsernames.isEmpty) return;
-          final placeholders =
-              List.filled(targetUsernames.length, '?').join(',');
-          final rows = await contactDb.rawQuery(
-            '''
+          final placeholders = List.filled(
+            targetUsernames.length,
+            '?',
+          ).join(',');
+          final rows = await contactDb.rawQuery('''
             SELECT username, remark, nick_name, alias 
             FROM $table 
             WHERE username IN ($placeholders)
-          ''',
-            targetUsernames,
-          );
+          ''', targetUsernames);
           for (final row in rows) {
             final username = row['username'] as String;
             final remark = row['remark'] as String?;
@@ -2452,8 +2716,8 @@ class DatabaseService {
             final displayName = remark?.isNotEmpty == true
                 ? remark!
                 : (nickName?.isNotEmpty == true
-                    ? nickName!
-                    : (alias?.isNotEmpty == true ? alias! : username));
+                      ? nickName!
+                      : (alias?.isNotEmpty == true ? alias! : username));
             assignDisplayName(username, displayName);
           }
         }
@@ -2468,9 +2732,7 @@ class DatabaseService {
             .toList();
         if (notFoundUsernames.isNotEmpty) {
           try {
-            final strangerLookup = _canonicalizeUsernames(
-              notFoundUsernames,
-            );
+            final strangerLookup = _canonicalizeUsernames(notFoundUsernames);
             await queryTableWithAlias('stranger', strangerLookup);
           } catch (e) {}
         }
@@ -2565,7 +2827,22 @@ class DatabaseService {
 
   /// 批量获取联系人头像URL（优先 big_head_url，其次 small_head_url）
   Future<Map<String, String>> getAvatarUrls(List<String> usernames) async {
-    if (_sessionDb == null || usernames.isEmpty) {
+    if (usernames.isEmpty) {
+      return {};
+    }
+
+    // 实时模式：通过 WCDB DLL 获取头像 URL
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      return _withWcdbOp(() async {
+        try {
+          return WeChatWCDBNative.getAvatarUrls(_wcdbHandle!, usernames);
+        } catch (e) {
+          return {};
+        }
+      });
+    }
+
+    if (_sessionDb == null) {
       return {};
     }
 
@@ -2590,8 +2867,7 @@ class DatabaseService {
         ) async {
           if (targets.isEmpty) return;
           final placeholders = List.filled(targets.length, '?').join(',');
-          final rows = await contactDb.rawQuery(
-            '''
+          final rows = await contactDb.rawQuery('''
             SELECT username,
                    CASE 
                      WHEN big_head_url IS NOT NULL AND TRIM(big_head_url) != '' THEN big_head_url
@@ -2600,9 +2876,7 @@ class DatabaseService {
                    END AS avatar_url
             FROM $table
             WHERE username IN ($placeholders)
-          ''',
-            targets,
-          );
+          ''', targets);
           for (final row in rows) {
             final username = row['username'] as String?;
             final url = row['avatar_url'] as String?;
@@ -2616,7 +2890,9 @@ class DatabaseService {
         await queryTableForAvatars('contact', usernames);
 
         // 对未命中的再从 stranger 表查
-        final notFound = usernames.where((u) => !result.containsKey(u)).toList();
+        final notFound = usernames
+            .where((u) => !result.containsKey(u))
+            .toList();
         if (notFound.isNotEmpty) {
           try {
             await queryTableForAvatars('stranger', notFound);
@@ -3465,11 +3741,9 @@ class DatabaseService {
         try {
           await for (final entity in sessionDir.list(followLinks: false)) {
             if (entity is File) {
-              final filename =
-                  PathUtils.basename(entity.path).toLowerCase();
+              final filename = PathUtils.basename(entity.path).toLowerCase();
               if (filename == 'contact.db') {
-                final normalized =
-                    PathUtils.normalizeDatabasePath(entity.path);
+                final normalized = PathUtils.normalizeDatabasePath(entity.path);
                 await logger.info(
                   'DatabaseService',
                   '发现 contact 数据库: ${PathUtils.escapeForLog(normalized)}',
@@ -3484,11 +3758,7 @@ class DatabaseService {
             }
           }
         } catch (e) {
-          await logger.warning(
-            'DatabaseService',
-            '扫描会话目录查找 contact 数据库失败',
-            e,
-          );
+          await logger.warning('DatabaseService', '扫描会话目录查找 contact 数据库失败', e);
         }
 
         if (fallback != null) {
@@ -3537,6 +3807,10 @@ class DatabaseService {
 
   /// 获取会话的详细信息（包括所在表、加好友时间等）
   Future<SessionDetailInfo> getSessionDetailInfo(String sessionId) async {
+    if (_mode == DatabaseMode.realtime && _wcdbHandle != null) {
+      return _getSessionDetailInfoRealtime(sessionId);
+    }
+
     if (_sessionDb == null) {
       throw Exception('数据库未连接');
     }
@@ -3687,6 +3961,66 @@ class DatabaseService {
       await logger.error('DatabaseService', '获取会话详细信息失败', e, stackTrace);
       rethrow;
     }
+  }
+
+  Future<SessionDetailInfo> _getSessionDetailInfoRealtime(
+    String sessionId,
+  ) async {
+    int messageCount = 0;
+    int? latestMessageTime;
+    int? firstMessageTime;
+
+    try {
+      messageCount = await getMessageCount(sessionId);
+    } catch (_) {}
+
+    if (messageCount > 0) {
+      try {
+        final latest = await getMessages(sessionId, limit: 1, offset: 0);
+        if (latest.isNotEmpty) {
+          latestMessageTime = latest.first.createTime;
+          firstMessageTime = firstMessageTime ?? latestMessageTime;
+        }
+
+        if (messageCount > 1) {
+          final oldest = await getMessages(
+            sessionId,
+            limit: 1,
+            offset: messageCount - 1,
+          );
+          if (oldest.isNotEmpty) {
+            firstMessageTime = oldest.first.createTime;
+          }
+        }
+      } catch (_) {}
+    }
+
+    Map<String, String> displayNames = {};
+    try {
+      displayNames = await getDisplayNames([sessionId]);
+    } catch (_) {}
+
+    return SessionDetailInfo(
+      wxid: sessionId,
+      displayName: displayNames[sessionId] ?? sessionId,
+      remark: null,
+      nickName: null,
+      alias: null,
+      messageTables: [
+        MessageTableLocation(
+          databasePath: _sessionDbPath ?? '实时数据库',
+          databaseName: _sessionDbPath != null
+              ? PathUtils.escapeForLog(_sessionDbPath!)
+              : 'realtime',
+          tableName: 'WCDB(实时)',
+          messageCount: messageCount,
+        ),
+      ],
+      firstMessageTime: firstMessageTime,
+      latestMessageTime: latestMessageTime,
+      messageCount: messageCount,
+      contactInfo: null,
+    );
   }
 
   /// 获取或打开缓存的消息数据库连接
@@ -4594,10 +4928,7 @@ class DatabaseService {
     }
   }
 
-
-  // 文件: lib/services/database_service.dart
-
-  /// 获取群聊的活跃时段数据（24小时分布） - [重构后版本]
+  /// 获取群聊的活跃时段数据（24小时分布）
   Future<Map<int, int>> getGroupActiveHours({
     required String chatroomId,
     required DateTime startDate,
@@ -4613,33 +4944,23 @@ class DatabaseService {
     );
 
     try {
-      final endOfDay = DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59);
+      final endOfDay = DateTime(
+        endDate.year,
+        endDate.month,
+        endDate.day,
+        23,
+        59,
+        59,
+      );
       final startTime = startDate.millisecondsSinceEpoch ~/ 1000;
       final endTime = endOfDay.millisecondsSinceEpoch ~/ 1000;
-
-      // --- 使用 print 进行诊断 ---
-      print('--- [DB Service - ActiveHours] ---');
-      print('开始获取活跃时段数据...');
-      print('Chatroom ID: $chatroomId');
-      print('Start Timestamp: $startTime (${startDate.toLocal()})');
-      print('End Timestamp: $endTime (${endOfDay.toLocal()})');
-
-      // 2. 复用已经能正常工作的 getMessagesByDate 方法！
-      // 这是最关键的改动，确保我们能和“群聊排行”一样获取到数据。
-      final messages = await getMessagesByDate(
-        chatroomId,
-        startTime,
-        endTime,
-      );
-
-      // --- 关键诊断日志 ---
-      // 观察这里打印的消息数量是否大于0
-      print('getMessagesByDate 返回了 ${messages.length} 条消息');
-
-      // 3. 在 Dart 中对消息进行按小时统计
+      final messages = await getMessagesByDate(chatroomId, startTime, endTime);
+      
       for (final message in messages) {
         // 从秒级时间戳创建 DateTime 对象
-        final messageTime = DateTime.fromMillisecondsSinceEpoch(message.createTime * 1000);
+        final messageTime = DateTime.fromMillisecondsSinceEpoch(
+          message.createTime * 1000,
+        );
         // 获取小时 (0-23)
         final hour = messageTime.hour;
         // 累加计数
@@ -4647,14 +4968,9 @@ class DatabaseService {
       }
 
       // --- 打印最终结果 ---
-      print('最终聚合的小时数据: $hourlyCounts');
-      print('--- [DB Service - ActiveHours] 结束 ---');
-
-    } catch (e, stackTrace) {
-      print('获取群聊活跃时段数据时发生严重错误: $e');
-      print('堆栈跟踪: $stackTrace');
+    } catch (e) {
     }
-    
+
     return hourlyCounts;
   }
 
@@ -4667,26 +4983,49 @@ class DatabaseService {
     if (!isConnected) {
       throw Exception('数据库未连接');
     }
-    
+
     final typeCounts = <int, int>{};
     // 定义已知类型的白名单集合
     const knownTypes = {
-      1, 3, 34, 42, 43, 47, 48, 10000, 244813135921, 17179869233,
-      21474836529, 154618822705, 12884901937, 8594229559345, 81604378673,
-      266287972401, 8589934592049, 270582939697, 25769803825
+      1,
+      3,
+      34,
+      42,
+      43,
+      47,
+      48,
+      10000,
+      244813135921,
+      17179869233,
+      21474836529,
+      154618822705,
+      12884901937,
+      8594229559345,
+      81604378673,
+      266287972401,
+      8589934592049,
+      270582939697,
+      25769803825,
     };
 
     try {
-      final endOfDay = DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59);
+      final endOfDay = DateTime(
+        endDate.year,
+        endDate.month,
+        endDate.day,
+        23,
+        59,
+        59,
+      );
       final startTime = startDate.millisecondsSinceEpoch ~/ 1000;
       final endTime = endOfDay.millisecondsSinceEpoch ~/ 1000;
 
       final dbInfos = await _collectTableInfosAcrossDatabases(chatroomId);
-      
+
       if (dbInfos.isEmpty) {
         return typeCounts;
       }
-      
+
       for (final dbInfo in dbInfos) {
         try {
           final result = await dbInfo.database.rawQuery(
@@ -4700,26 +5039,21 @@ class DatabaseService {
             ''',
             [startTime, endTime],
           );
-          
+
           for (final row in result) {
             final type = row['local_type'] as int?;
             final count = row['count'] as int?;
-            
-            // --- 核心改动：只处理白名单中的已知类型 ---
+
+            // 只处理白名单中的已知类型 ---
             if (type != null && count != null && knownTypes.contains(type)) {
               typeCounts[type] = (typeCounts[type] ?? 0) + count;
             }
           }
-        } catch (e) {
-          // 在生产环境中，可以替换为日志记录
-          // print('[DB Service - MediaStats] 警告: 查询媒体统计时，处理表 ${dbInfo.tableName} 失败: $e');
-        }
-      } 
+        } catch (e) {}
+      }
     } catch (e) {
-      // 在生产环境中，可以替换为日志记录
-      // print('[DB Service - MediaStats] 严重错误: 获取媒体统计数据失败: $e');
     }
-    
+
     return typeCounts;
   }
 }
@@ -4763,7 +5097,8 @@ class _DatabaseTableInfo {
     required this.needsClose,
     _MessageTableSchema? schema,
   }) : schema =
-            schema ?? const _MessageTableSchema(hasSortSeq: false, hasCreateTime: true);
+           schema ??
+           const _MessageTableSchema(hasSortSeq: false, hasCreateTime: true);
 }
 
 /// 消息时间信息（用于跨数据库排序）
@@ -4829,4 +5164,32 @@ class MessageTableLocation {
     required this.tableName,
     required this.messageCount,
   });
+}
+
+/// 后台 isolate 中获取会话列表
+List<Map<String, dynamic>> _wcdbGetSessions(int handle) {
+  if (!WeChatWCDBNative.initialize()) return [];
+  return WeChatWCDBNative.getSessions(handle);
+}
+
+/// 后台 isolate 中获取消息列表
+List<Map<String, dynamic>> _wcdbGetMessages(Map<String, dynamic> args) {
+  try {
+    final handle = args['handle'] as int?;
+    final username = args['username'] as String?;
+    final limit = args['limit'] as int? ?? 50;
+    final offset = args['offset'] as int? ?? 0;
+
+    if (handle == null || username == null) return [];
+    if (!WeChatWCDBNative.initialize()) return [];
+
+    return WeChatWCDBNative.getMessages(
+      handle,
+      username,
+      limit: limit,
+      offset: offset,
+    );
+  } catch (_) {
+    return [];
+  }
 }

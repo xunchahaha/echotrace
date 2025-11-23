@@ -141,12 +141,16 @@ class AppState extends ChangeNotifier {
     int retryCount = 3,
     int retryDelay = 1000,
   }) async {
+    if (_isLoading) {
+      await logger.info('AppState', '已有重连任务进行中，跳过本次请求');
+      return;
+    }
     _isLoading = true;
     notifyListeners();
 
     Exception? lastError;
 
-    // 🔧 修复：强制关闭所有数据库连接，释放文件句柄
+    // 强制关闭所有数据库连接，释放文件句柄
     try {
       await logger.info('AppState', '关闭旧的数据库连接...');
       await databaseService.close();
@@ -238,6 +242,13 @@ class AppState extends ChangeNotifier {
       }
 
       await logger.info('AppState', '找到session.db: $sessionDbPath');
+      // 已经是实时模式且相同路径/密钥，直接返回
+      if (databaseService.mode == DatabaseMode.realtime &&
+          databaseService.dbPath == sessionDbPath) {
+        await logger.info('AppState', '已在实时模式且路径未变，跳过重复连接');
+        return;
+      }
+
       // 连接实时加密数据库
       await databaseService.connectRealtimeDatabase(sessionDbPath, hexKey);
       await logger.info(
@@ -457,6 +468,12 @@ class AppState extends ChangeNotifier {
   /// 获取指定用户的头像URL
   String? getAvatarUrl(String username) {
     return _globalAvatarCache[username];
+  }
+
+  /// 判断头像是否已缓存（用于禁用重复动画）
+  bool isAvatarCached(String username) {
+    final url = _globalAvatarCache[username];
+    return url != null && url.isNotEmpty;
   }
 
   /// 批量获取并更新头像缓存

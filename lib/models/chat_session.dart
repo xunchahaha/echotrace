@@ -41,23 +41,54 @@ class ChatSession {
 
   /// 从数据库Map创建ChatSession对象
   factory ChatSession.fromMap(Map<String, dynamic> map) {
+    int _intValue(List<String> keys, {int defaultValue = 0}) {
+      for (final key in keys) {
+        if (map.containsKey(key) && map[key] != null) {
+          final v = map[key];
+          if (v is int) return v;
+          if (v is num) return v.toInt();
+          final parsed = int.tryParse(v.toString());
+          if (parsed != null) return parsed;
+        }
+      }
+      return defaultValue;
+    }
+
+    String _stringValue(List<String> keys) {
+      for (final key in keys) {
+        if (map.containsKey(key) && map[key] != null) {
+          return _cleanString(map[key]);
+        }
+      }
+      return '';
+    }
+
     return ChatSession(
-      username: _cleanString(map['username']),
-      type: map['type'] ?? 0,
-      unreadCount: map['unread_count'] ?? 0,
-      unreadFirstMsgSrvId: map['unread_first_msg_srv_id'] ?? 0,
-      isHidden: map['is_hidden'] ?? 0,
-      summary: _cleanString(map['summary']),
-      draft: _cleanString(map['draft']),
-      status: map['status'] ?? 0,
-      lastTimestamp: map['last_timestamp'] ?? 0,
-      sortTimestamp: map['sort_timestamp'] ?? 0,
-      lastClearUnreadTimestamp: map['last_clear_unread_timestamp'] ?? 0,
-      lastMsgLocalId: map['last_msg_locald_id'] ?? 0,
-      lastMsgType: map['last_msg_type'] ?? 0,
-      lastMsgSubType: map['last_msg_sub_type'] ?? 0,
-      lastMsgSender: _cleanString(map['last_msg_sender']),
-      lastSenderDisplayName: _cleanString(map['last_sender_display_name']),
+      username: _stringValue(['username', 'user_name', 'userName']),
+      type: _intValue(['type']),
+      unreadCount: _intValue(['unread_count', 'unreadCount']),
+      unreadFirstMsgSrvId:
+          _intValue(['unread_first_msg_srv_id', 'unreadFirstMsgSrvId']),
+      isHidden: _intValue(['is_hidden', 'isHidden']),
+      summary: _stringValue(['summary', 'digest']),
+      draft: _stringValue(['draft']),
+      status: _intValue(['status']),
+      lastTimestamp: _intValue(['last_timestamp', 'lastTimestamp']),
+      sortTimestamp: _intValue(['sort_timestamp', 'sortTimestamp']),
+      lastClearUnreadTimestamp:
+          _intValue(['last_clear_unread_timestamp', 'lastClearUnreadTimestamp']),
+      lastMsgLocalId: _intValue([
+        'last_msg_locald_id',
+        'last_msg_localid',
+        'last_msg_local_id',
+        'lastMsgLocalId'
+      ]),
+      lastMsgType: _intValue(['last_msg_type', 'lastMsgType']),
+      lastMsgSubType: _intValue(['last_msg_sub_type', 'lastMsgSubType']),
+      lastMsgSender: _stringValue(['last_msg_sender', 'lastMsgSender']),
+      lastSenderDisplayName: _stringValue(
+        ['last_sender_display_name', 'lastSenderDisplayName'],
+      ),
     );
   }
 

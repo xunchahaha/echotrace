@@ -37,6 +37,13 @@ class _SettingsPageState extends State<SettingsPage> {
   String _databaseMode = 'backup'; // 'backup' 或 'realtime'
   bool _showWxidInput = false; // 是否显示手动输入wxid的输入框
   bool _debugMode = false; // 调试模式开关
+  // 记录初始配置，防止重复保存同样配置
+  String _initialKey = '';
+  String _initialPath = '';
+  String _initialMode = 'backup';
+  String _initialWxid = '';
+  String _initialImageXorKey = '';
+  String _initialImageAesKey = '';
 
   @override
   void initState() {
@@ -71,9 +78,15 @@ class _SettingsPageState extends State<SettingsPage> {
         _keyController.text = key ?? '';
         _pathController.text = path ?? '';
         _databaseMode = mode;
+        _initialKey = key ?? '';
+        _initialPath = path ?? '';
+        _initialMode = mode;
         _imageXorKeyController.text = imageXorKey ?? '';
         _imageAesKeyController.text = imageAesKey ?? '';
         _wxidController.text = manualWxid ?? '';
+        _initialImageXorKey = imageXorKey ?? '';
+        _initialImageAesKey = imageAesKey ?? '';
+        _initialWxid = manualWxid ?? '';
         _debugMode = debugMode;
         // 如果已经有手动输入的wxid，显示输入框
         _showWxidInput = (manualWxid != null && manualWxid.isNotEmpty);
@@ -84,6 +97,21 @@ class _SettingsPageState extends State<SettingsPage> {
         _checkAccountDirectory(path);
       }
     }
+  }
+
+  bool _hasConfigChanged() {
+    final key = _keyController.text.trim();
+    final path = _pathController.text.trim();
+    final wxid = _wxidController.text.trim();
+    final imageXorKey = _imageXorKeyController.text.trim();
+    final imageAesKey = _imageAesKeyController.text.trim();
+
+    return key != _initialKey ||
+        path != _initialPath ||
+        _databaseMode != _initialMode ||
+        wxid != _initialWxid ||
+        imageXorKey != _initialImageXorKey ||
+        imageAesKey != _initialImageAesKey;
   }
 
   /// 检查目录中是否存在账号目录（包含 db_storage 子文件夹）
@@ -292,6 +320,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _saveConfig() async {
     if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    if (!_hasConfigChanged()) {
+      _showMessage('配置未发生变化，无需保存', true);
       return;
     }
 
@@ -1011,7 +1044,7 @@ class _SettingsPageState extends State<SettingsPage> {
             _buildModeOption(
               context,
               title: '实时模式',
-              subtitle: '直接读取微信加密数据库（实验性功能）',
+              subtitle: '将聊天记录页面的数据源变为实时从微信数据库读取',
               value: 'realtime',
               isSelected: _databaseMode == 'realtime',
               onTap: () {
@@ -1037,7 +1070,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   Expanded(
                     child: Text(
                       _databaseMode == 'realtime'
-                          ? '实时模式将直接读取微信原始数据库，无需解密备份'
+                          ? '实时模式将直接读取微信原始数据库，无需解密，但分析功能仍然需要解密后使用'
                           : '备份模式需要先解密数据库，更稳定可靠',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Theme.of(

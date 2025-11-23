@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/rendering.dart';
@@ -11,6 +12,7 @@ import '../widgets/message_loading_shimmer.dart';
 import '../widgets/common/shimmer_loading.dart';
 import '../utils/string_utils.dart';
 import '../services/logger_service.dart';
+import '../services/database_service.dart';
 
 /// 聊天记录页面
 class ChatPage extends StatefulWidget {
@@ -21,7 +23,7 @@ class ChatPage extends StatefulWidget {
 }
 
 class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
-  static const int _initialMessageBatch = 30; // 减少初始加载数量以提升速度
+  static const int _initialMessageBatch = 30; // 初始加载数量
   static const int _loadMoreBatch = 50; // 分批加载更多
   static const double _loadTriggerDistance = 200.0;
   static const double _prefetchTriggerDistance = 500.0;
@@ -40,9 +42,15 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
   final ScrollController _scrollController = ScrollController();
   // 群聊成员姓名缓存（username -> displayName）
   Map<String, String> _senderDisplayNames = {};
+  final Set<String> _messageKeys = {};
   late AnimationController _refreshController;
   DateTime? _lastInitialLoadTime;
   bool _prefetchScheduled = false;
+  bool _isRealtimeRefreshing = false;
+  Future<void>? _realtimeRefreshFuture;
+  bool _realtimeRefreshQueued = false;
+  int _realtimeTick = 0;
+  StreamSubscription<void>? _dbChangeSubscription;
 
   // 搜索相关
   bool _isSearching = false;
@@ -67,6 +75,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
       curve: Curves.easeInOut,
     );
     _searchController.addListener(_onSearchChanged);
+    _listenDatabaseChanges();
     _loadSessions();
     _scrollController.addListener(_onScroll);
     _loadMyAvatar();
@@ -79,6 +88,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     _searchAnimationController.dispose();
     _searchController.dispose();
     _searchFocusNode.dispose();
+    _dbChangeSubscription?.cancel();
     super.dispose();
   }
 
@@ -87,20 +97,8 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     await logger.debug('ChatPage', '搜索关键词: "$query"');
 
     setState(() {
-      if (query.isEmpty) {
-        _filteredSessions = _sessions;
-        logger.debug('ChatPage', '清空搜索，显示全部 ${_sessions.length} 个会话');
-      } else {
-        _filteredSessions = _sessions.where((session) {
-          final displayName = session.displayName?.toLowerCase() ?? '';
-          final username = session.username.toLowerCase();
-          final summary = session.displaySummary.toLowerCase();
-          return displayName.contains(query) ||
-              username.contains(query) ||
-              summary.contains(query);
-        }).toList();
-        logger.debug('ChatPage', '搜索结果: 找到 ${_filteredSessions.length} 个匹配的会话');
-      }
+      _filteredSessions = _filterSessionsByQuery(_sessions, query);
+      logger.debug('ChatPage', '搜索结果: 找到 ${_filteredSessions.length} 个匹配的会话');
     });
   }
 
@@ -137,6 +135,27 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     });
   }
 
+  bool _shouldAnimateAvatar(String? username, AppState appState) {
+    if (username == null || username.isEmpty) return true;
+    return !appState.isAvatarCached(username);
+  }
+
+  List<ChatSession> _filterSessionsByQuery(
+    List<ChatSession> source,
+    String query,
+  ) {
+    if (query.isEmpty) return source;
+    final lower = query.toLowerCase();
+    return source.where((session) {
+      final displayName = session.displayName?.toLowerCase() ?? '';
+      final username = session.username.toLowerCase();
+      final summary = session.displaySummary.toLowerCase();
+      return displayName.contains(lower) ||
+          username.contains(lower) ||
+          summary.contains(lower);
+    }).toList();
+  }
+
   void _onScroll() {
     if (!_scrollController.hasClients || !_hasMoreMessages) {
       return;
@@ -161,6 +180,194 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
         !_prefetchScheduled) {
       _prefetchScheduled = true;
       _loadMoreMessages();
+    }
+  }
+
+  void _queueRealtimeRefresh() {
+    if (_realtimeRefreshFuture != null) {
+      _realtimeRefreshQueued = true;
+      return;
+    }
+    _realtimeRefreshFuture = _refreshRealtimeData().whenComplete(() {
+      _realtimeRefreshFuture = null;
+      if (_realtimeRefreshQueued) {
+        _realtimeRefreshQueued = false;
+        _queueRealtimeRefresh();
+      }
+    });
+  }
+
+  void _listenDatabaseChanges() {
+    _dbChangeSubscription?.cancel();
+    final dbService = context.read<AppState>().databaseService;
+    _dbChangeSubscription = dbService.databaseChangeStream.listen((_) {
+      _queueRealtimeRefresh();
+    });
+  }
+
+  Future<void> _refreshRealtimeData() async {
+    if (_isRealtimeRefreshing || !mounted) return;
+    _realtimeTick++;
+    final appState = context.read<AppState>();
+    if (appState.databaseService.mode != DatabaseMode.realtime ||
+        !appState.databaseService.isConnected) {
+      return;
+    }
+
+    _isRealtimeRefreshing = true;
+    try {
+      final refreshSessions = _realtimeTick % 3 == 0;
+      if (refreshSessions) {
+        await _refreshRealtimeSessions(appState);
+      }
+      await _refreshRealtimeMessages(appState);
+    } finally {
+      _isRealtimeRefreshing = false;
+    }
+  }
+
+  bool _sessionsChanged(List<ChatSession> fresh) {
+    if (fresh.length != _sessions.length) return true;
+    final checkLength = fresh.length < 20 ? fresh.length : 20;
+    for (int i = 0; i < checkLength; i++) {
+      final a = fresh[i];
+      final b = _sessions[i];
+      if (a.username != b.username ||
+          a.sortTimestamp != b.sortTimestamp ||
+          a.lastTimestamp != b.lastTimestamp ||
+          a.summary != b.summary) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<void> _refreshRealtimeSessions(AppState appState) async {
+    if (_isLoadingSessions) return;
+    try {
+      final sessions = await appState.databaseService.getSessions();
+      final filteredSessions = sessions.where((session) {
+        if (session.username.startsWith('gh_')) return false;
+        if (session.username.startsWith('weixin')) return false;
+        if (session.username.startsWith('qqmail')) return false;
+        if (session.username.startsWith('fmessage')) return false;
+        if (session.username.startsWith('medianote')) return false;
+        if (session.username.startsWith('floatbottle')) return false;
+        return session.username.contains('wxid_') ||
+            session.username.contains('@chatroom');
+      }).toList();
+
+      if (!_sessionsChanged(filteredSessions)) return;
+
+      if (!mounted) return;
+      setState(() {
+        _sessions = filteredSessions;
+        final query = _searchController.text.trim().toLowerCase();
+        _filteredSessions = _filterSessionsByQuery(_sessions, query);
+      });
+
+      final usernamesToFetch = filteredSessions
+          .map((s) => s.username)
+          .where((u) => !appState.isAvatarCached(u))
+          .toList();
+      if (usernamesToFetch.isNotEmpty) {
+        await appState.fetchAndCacheAvatars(usernamesToFetch);
+      }
+    } catch (e, stackTrace) {
+      await logger.debug('ChatPage', '实时刷新会话失败: $e $stackTrace');
+    }
+  }
+
+  int _messageTimeKey(Message m) {
+    if (m.sortSeq != 0) return m.sortSeq;
+    return m.createTime;
+  }
+
+  String _buildMessageKey(Message m) {
+    return '${m.localId}_${m.createTime}_${m.sortSeq}';
+  }
+
+  Future<void> _refreshRealtimeMessages(AppState appState) async {
+    if (_selectedSession == null ||
+        _isLoadingMessages ||
+        _isLoadingMoreMessages) {
+      return;
+    }
+
+    try {
+      const fetchLimit = 30; // 拉取一个固定窗口，避免计数开销
+      final latestBatch = await appState.databaseService.getMessages(
+        _selectedSession!.username,
+        limit: fetchLimit,
+        offset: 0,
+      );
+      if (latestBatch.isEmpty) return;
+
+      if (_messages.isEmpty) {
+        // 尚未加载过，交给正常加载流程
+        return;
+      }
+
+      final incoming = latestBatch.reversed.toList(); // oldest -> newest
+      final List<Message> newOnes = [];
+      final lastKey = _messageTimeKey(_messages.last);
+
+      for (final msg in incoming) {
+        final key = _messageTimeKey(msg);
+        if (key <= lastKey) continue;
+        final composite = _buildMessageKey(msg);
+        if (_messageKeys.contains(composite)) continue;
+        _messageKeys.add(composite);
+        newOnes.add(msg);
+      }
+
+      if (newOnes.isEmpty || !mounted) return;
+      setState(() {
+        _messages.addAll(newOnes);
+        _currentOffset = _messages.length;
+      });
+
+      // 若靠近底部，自动跟随新消息
+      if (_scrollController.hasClients) {
+        final distanceToBottom =
+            _scrollController.position.maxScrollExtent -
+                _scrollController.position.pixels;
+        if (distanceToBottom < 80) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!_scrollController.hasClients) return;
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeOut,
+            );
+          });
+        }
+      }
+
+      if (_selectedSession!.isGroup && newOnes.isNotEmpty) {
+        final newSenders = latestBatch
+            .where(
+              (m) => m.senderUsername != null && m.senderUsername!.isNotEmpty,
+            )
+            .map((m) => m.senderUsername!)
+            .where((username) => !_senderDisplayNames.containsKey(username))
+            .toSet()
+            .toList();
+
+        if (newSenders.isNotEmpty) {
+          final names = await appState.databaseService.getDisplayNames(
+            newSenders,
+          );
+          if (mounted && _selectedSession != null) {
+            setState(() {
+              _senderDisplayNames.addAll(names);
+            });
+          }
+          await appState.fetchAndCacheAvatars(newSenders);
+        }
+      }
+    } catch (e, stackTrace) {
+      await logger.debug('ChatPage', '实时刷新消息失败: $e $stackTrace');
     }
   }
 
@@ -193,7 +400,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
       // 异步加载会话列表
       final sessions = await appState.databaseService.getSessions();
 
-      // 在后台线程过滤会话（避免阻塞 UI）
+      // 在后台线程过滤会话
       final filteredSessions = sessions.where((session) {
         // 排除公众号/服务号
         if (session.username.startsWith('gh_')) return false;
@@ -226,9 +433,13 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
       // 异步加载头像（使用全局缓存）
       try {
         final appState = context.read<AppState>();
-        await appState.fetchAndCacheAvatars(
-          filteredSessions.map((s) => s.username).toList(),
-        );
+        final usernamesToFetch = filteredSessions
+            .map((s) => s.username)
+            .where((u) => !appState.isAvatarCached(u))
+            .toList();
+        if (usernamesToFetch.isNotEmpty) {
+          await appState.fetchAndCacheAvatars(usernamesToFetch);
+        }
       } catch (_) {}
     } catch (e, stackTrace) {
       await logger.error('ChatPage', '加载会话列表失败', e, stackTrace);
@@ -292,6 +503,9 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
       // 1. 先渲染消息，让用户立刻看到内容（渐进式渲染）
       setState(() {
         _messages = messages.reversed.toList(); // 反转顺序，最新消息在下方
+        _messageKeys
+          ..clear()
+          ..addAll(_messages.map(_buildMessageKey));
         _isLoadingMessages = false;
         _currentOffset = messages.length;
         _hasMoreMessages = messages.length >= _initialMessageBatch;
@@ -435,7 +649,9 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
 
       if (mounted && _selectedSession?.username == currentSessionUsername) {
         setState(() {
-          _messages = [...moreMessages.reversed, ..._messages];
+          final prepend = moreMessages.reversed.toList();
+          _messageKeys.addAll(prepend.map(_buildMessageKey));
+          _messages = [...prepend, ..._messages];
           _isLoadingMoreMessages = false;
           _currentOffset += moreMessages.length;
           _hasMoreMessages = moreMessages.length >= _loadMoreBatch;
@@ -473,6 +689,9 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
 
   /// 判断消息是否为自己发送
   bool _isMessageFromMe(Message message) {
+    if (message.isSystemLike) {
+      return false;
+    }
     if (message.isSend != null) {
       return message.isSend == 1;
     }
@@ -728,6 +947,10 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
                                 avatarUrl: appState.getAvatarUrl(
                                   session.username,
                                 ),
+                                enableAvatarFade: _shouldAnimateAvatar(
+                                  session.username,
+                                  appState,
+                                ),
                               );
                             },
                           );
@@ -855,6 +1078,18 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
                                         _selectedSession!.username,
                                       );
 
+                                final avatarOwner = _isMessageFromMe(message)
+                                    ? appState.databaseService
+                                            .currentAccountWxid ??
+                                        ''
+                                    : (message.senderUsername ??
+                                        _selectedSession?.username ??
+                                        '');
+                                final animateAvatar = _shouldAnimateAvatar(
+                                  avatarOwner,
+                                  appState,
+                                );
+
                                 return MessageBubble(
                                   message: message,
                                   isFromMe: _isMessageFromMe(message),
@@ -865,6 +1100,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
                                   avatarUrl: _isMessageFromMe(message)
                                       ? _myAvatarUrl
                                       : avatarUrl,
+                                  enableAvatarFade: animateAvatar,
                                 );
                               },
                             ),
@@ -880,10 +1116,19 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     final avatarUrl = _selectedSession != null
         ? appState.getAvatarUrl(_selectedSession!.username)
         : null;
+    final animateAvatar = _selectedSession != null
+        ? _shouldAnimateAvatar(_selectedSession!.username, appState)
+        : true;
 
     if (avatarUrl != null && avatarUrl.isNotEmpty) {
       return CachedNetworkImage(
         imageUrl: avatarUrl,
+        fadeInDuration: animateAvatar
+            ? const Duration(milliseconds: 200)
+            : Duration.zero,
+        fadeOutDuration: animateAvatar
+            ? const Duration(milliseconds: 200)
+            : Duration.zero,
         imageBuilder: (context, imageProvider) => CircleAvatar(
           backgroundColor: Theme.of(context).colorScheme.primary,
           backgroundImage: imageProvider,

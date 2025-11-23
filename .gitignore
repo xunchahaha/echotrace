@@ -50,3 +50,4 @@ go_decrypt/go.sum
 *.dylib
 *.so
 go_decrypt/*.h
+/wcdb/

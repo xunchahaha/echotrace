@@ -5,6 +5,8 @@ import 'package:pointycastle/block/aes.dart';
 
 /// 微信图片解密服务
 class ImageDecryptService {
+  static const String _defaultV1AesKey = 'cfcd208495d565ef';
+
   /// 解密微信 V3 版本的 .dat 文件
   /// [inputPath] 输入文件路径
   /// [xorKey] XOR 密钥
@@ -40,8 +42,10 @@ class ImageDecryptService {
     final aesSize = _bytesToInt32(header.sublist(6, 10));
     final xorSize = _bytesToInt32(header.sublist(10, 14));
 
-    // 对齐到AES块大小（16字节）
-    final alignedAesSize = aesSize <= 0 ? 0 : ((aesSize + 15) ~/ 16) * 16;
+    // 对齐到 AES 块大小（16字节）
+    final alignedAesSize = aesSize + (16 - (aesSize % 16));
+    // 如果 aesSize 本身是 16 的倍数，上面的公式会额外加 16
+    // `aes_size += 16 - aes_size % 16` 完全一致
     if (alignedAesSize > data.length) {
       throw Exception('文件格式异常：AES 数据长度超过文件实际长度');
     }
@@ -61,7 +65,7 @@ class ImageDecryptService {
         cipher.processBlock(aesData, offset, decryptedData, offset);
       }
 
-      unpaddedData = _removePadding(decryptedData);
+      unpaddedData = _strictRemovePadding(decryptedData);
     }
 
     // 处理XOR数据
@@ -148,15 +152,24 @@ class ImageDecryptService {
     final version = getDatVersion(inputPath);
 
     Uint8List decryptedData;
-    if (version == 0) {
-      // V3版本
-      decryptedData = decryptDatV3(inputPath, xorKey);
-    } else {
-      // V4版本
-      if (aesKey == null || aesKey.length != 16) {
-        throw Exception('V4版本需要16字节AES密钥');
-      }
-      decryptedData = decryptDatV4(inputPath, xorKey, aesKey);
+    switch (version) {
+      case 0:
+        decryptedData = decryptDatV3(inputPath, xorKey);
+        break;
+      case 1:
+        decryptedData = decryptDatV4(
+          inputPath,
+          xorKey,
+          asciiKey16(_defaultV1AesKey),
+        );
+        break;
+      default:
+        final keyToUse = aesKey;
+        if (keyToUse == null || keyToUse.length != 16) {
+          throw Exception('V4版本需要16字节AES密钥');
+        }
+        decryptedData = decryptDatV4(inputPath, xorKey, keyToUse);
+        break;
     }
 
     // 异步写入输出文件，确保数据完整性
@@ -178,15 +191,24 @@ class ImageDecryptService {
     final version = getDatVersion(inputPath);
 
     Uint8List decryptedData;
-    if (version == 0) {
-      // V3版本
-      decryptedData = decryptDatV3(inputPath, xorKey);
-    } else {
-      // V4版本
-      if (aesKey == null || aesKey.length != 16) {
-        throw Exception('V4版本需要16字节AES密钥');
-      }
-      decryptedData = decryptDatV4(inputPath, xorKey, aesKey);
+    switch (version) {
+      case 0:
+        decryptedData = decryptDatV3(inputPath, xorKey);
+        break;
+      case 1:
+        decryptedData = decryptDatV4(
+          inputPath,
+          xorKey,
+          asciiKey16(_defaultV1AesKey),
+        );
+        break;
+      default:
+        final keyToUse = aesKey;
+        if (keyToUse == null || keyToUse.length != 16) {
+          throw Exception('V4版本需要16字节AES密钥');
+        }
+        decryptedData = decryptDatV4(inputPath, xorKey, keyToUse);
+        break;
     }
 
     // 同步写入输出文件
@@ -194,21 +216,20 @@ class ImageDecryptService {
     outputFile.writeAsBytesSync(decryptedData, flush: true);
   }
 
-  /// 去除 PKCS7 填充
-  Uint8List _removePadding(Uint8List data) {
+  /// 去除 PKCS7 填充（严格校验，填充不合法则抛异常）
+  Uint8List _strictRemovePadding(Uint8List data) {
     if (data.isEmpty) {
-      return data;
+      throw Exception('解密结果为空，填充非法');
     }
 
     final paddingLength = data[data.length - 1];
     if (paddingLength == 0 || paddingLength > 16 || paddingLength > data.length) {
-      return data; // 无效填充，返回原数据
+      throw Exception('PKCS7 填充长度非法');
     }
 
-    // 验证填充是否有效
     for (int i = data.length - paddingLength; i < data.length; i++) {
       if (data[i] != paddingLength) {
-        return data; // 填充无效，返回原数据
+        throw Exception('PKCS7 填充内容非法');
       }
     }
 
@@ -257,6 +278,15 @@ class ImageDecryptService {
     }
 
     return bytes;
+  }
+
+  /// 将 16 字节 ASCII 字符串转为密钥（直接取前16字节）
+  static Uint8List asciiKey16(String keyString) {
+    final bytes = keyString.codeUnits;
+    if (bytes.length < 16) {
+      throw Exception('AES密钥至少需要16个字符');
+    }
+    return Uint8List.fromList(bytes.sublist(0, 16));
   }
 
   /// 从十六进制字符串转换XOR密钥

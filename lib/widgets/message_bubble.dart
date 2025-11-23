@@ -15,6 +15,7 @@ class MessageBubble extends StatefulWidget {
   final String sessionUsername;
   final bool shouldShowTime;
   final String? avatarUrl;
+  final bool enableAvatarFade;
 
   const MessageBubble({
     super.key,
@@ -24,6 +25,7 @@ class MessageBubble extends StatefulWidget {
     required this.sessionUsername,
     this.shouldShowTime = false,
     this.avatarUrl,
+    this.enableAvatarFade = true,
   });
 
   @override
@@ -109,6 +111,65 @@ class _MessageBubbleState extends State<MessageBubble> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.message.isSystemLike) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (widget.shouldShowTime)
+              Center(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _cleanString(widget.message.formattedCreateTime),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.6),
+                          fontSize: 10,
+                        ),
+                  ),
+                ),
+              ),
+            Center(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest
+                      .withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: SelectableText(
+                  _cleanString(_getDisplayContent()),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withValues(alpha: 0.7),
+                      ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Column(
@@ -236,6 +297,12 @@ class _MessageBubbleState extends State<MessageBubble> {
       if (widget.avatarUrl != null && widget.avatarUrl!.isNotEmpty)
         CachedNetworkImage(
           imageUrl: widget.avatarUrl!,
+          fadeInDuration: widget.enableAvatarFade
+              ? const Duration(milliseconds: 200)
+              : Duration.zero,
+          fadeOutDuration: widget.enableAvatarFade
+              ? const Duration(milliseconds: 200)
+              : Duration.zero,
           imageBuilder: (context, imageProvider) => CircleAvatar(
             radius: 18,
             backgroundColor: Theme.of(
@@ -287,6 +354,12 @@ class _MessageBubbleState extends State<MessageBubble> {
       if (widget.avatarUrl != null && widget.avatarUrl!.isNotEmpty)
         CachedNetworkImage(
           imageUrl: widget.avatarUrl!,
+          fadeInDuration: widget.enableAvatarFade
+              ? const Duration(milliseconds: 200)
+              : Duration.zero,
+          fadeOutDuration: widget.enableAvatarFade
+              ? const Duration(milliseconds: 200)
+              : Duration.zero,
           imageBuilder: (context, imageProvider) => CircleAvatar(
             radius: 18,
             backgroundColor: Theme.of(
