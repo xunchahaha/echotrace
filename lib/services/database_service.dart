@@ -3572,8 +3572,10 @@ class DatabaseService {
     if (_sessionDbPath != null) {
       final wxidDir = _findWxidDirFromPath(_sessionDbPath!);
       if (wxidDir != null) {
+        await logger.info('DatabaseService', '从微信账号目录查找消息数据库: ${wxidDir.path}');
         // 查找所有 message_[0-9].db 文件
-        for (int i = 0; i < 10; i++) {
+        // 扩大查找范围，防止数据库分片超过9个
+        for (int i = 0; i < 100; i++) {
           final candidatePath = PathUtils.join(wxidDir.path, 'message_$i.db');
           final candidate = File(candidatePath);
           if (await candidate.exists()) {
