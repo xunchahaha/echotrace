@@ -155,6 +155,8 @@ flutter build windows
 
 <div align="center">
 
+---
+
 **请负责任地使用本工具，遵守相关法律法规**
 
 比起沉浸在回忆里，也许珍惜眼前的人会更重要一点
