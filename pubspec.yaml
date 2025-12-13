@@ -89,6 +89,13 @@ dependencies:
   cached_network_image: ^3.3.1
 
   jieba_flutter: ^0.2.0
+
+  msix: ^3.16.8
+
+msix_config:
+  display_name: EchoTrace
+  publisher_display_name: EchoTrace
+  identity_name: com.echotrace.app
   
 dev_dependencies:
   flutter_test:
