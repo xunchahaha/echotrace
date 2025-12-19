@@ -264,11 +264,32 @@ class ChatSession {
 
   /// 获取显示摘要
   String get displaySummary {
-    if (summary.isNotEmpty) {
-      return summary;
-    } else {
-      return lastMessageTypeDescription;
+    final trimmedSummary = summary.trim();
+
+    if (lastMsgType == 34) {
+      final voiceSummary = _formatVoiceSummary(trimmedSummary);
+      if (voiceSummary.isNotEmpty) return voiceSummary;
     }
+
+    if (trimmedSummary.isNotEmpty) return trimmedSummary;
+    return lastMessageTypeDescription;
+  }
+
+  String _formatVoiceSummary(String raw) {
+    if (raw.isEmpty) return '';
+    if (raw.contains('语音')) return raw;
+
+    final match = RegExp(r'(\d+(?:\\.\\d+)?)').firstMatch(raw);
+    if (match != null) {
+      final value = match.group(1)!;
+      final seconds = double.tryParse(value);
+      final displaySeconds = seconds != null && seconds == seconds.roundToDouble()
+          ? seconds.toInt().toString()
+          : value;
+      return '[语音 ${displaySeconds}秒]';
+    }
+
+    return '[语音消息]';
   }
 
   /// 获取草稿提示

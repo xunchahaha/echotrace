@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import '../services/database_service.dart';
 import '../services/config_service.dart';
 import '../services/logger_service.dart';
+import '../services/voice_message_service.dart';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -13,6 +14,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 class AppState extends ChangeNotifier {
   final DatabaseService databaseService = DatabaseService();
   final ConfigService configService = ConfigService();
+  late final VoiceMessageService voiceService =
+      VoiceMessageService(databaseService);
 
   bool _isConfigured = false;
   String _currentPage = 'welcome';

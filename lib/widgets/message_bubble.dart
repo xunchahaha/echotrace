@@ -6,6 +6,7 @@ import '../utils/string_utils.dart';
 import '../utils/xml_message_parser.dart';
 import '../providers/app_state.dart';
 import 'image_message_widget.dart';
+import 'voice_message_widget.dart';
 
 /// 消息气泡组件
 class MessageBubble extends StatefulWidget {
@@ -246,25 +247,36 @@ class _MessageBubbleState extends State<MessageBubble> {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             // 真实消息
-            widget.message.hasImage
-                ? ImageMessageWidget(
-                    message: widget.message,
-                    sessionUsername: widget.sessionUsername,
-                    isFromMe: true,
-                  )
-                : Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primary,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: SelectableText(
-                      _cleanString(_getDisplayContent()),
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodyMedium?.copyWith(color: Colors.white),
-                    ),
-                  ),
+            if (widget.message.localType == 34)
+              VoiceMessageWidget(
+                message: widget.message,
+                sessionUsername: widget.sessionUsername,
+                isFromMe: true,
+              )
+            else if (widget.message.hasImage)
+              ImageMessageWidget(
+                message: widget.message,
+                sessionUsername: widget.sessionUsername,
+                isFromMe: true,
+              )
+            else
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: SelectableText(
+                  _cleanString(_getDisplayContent()),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
             // 引用消息（放在下方）
             if (widget.message.quotedContent.isNotEmpty)
               Container(
@@ -410,25 +422,34 @@ class _MessageBubbleState extends State<MessageBubble> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // 真实消息
-            widget.message.hasImage
-                ? ImageMessageWidget(
-                    message: widget.message,
-                    sessionUsername: widget.sessionUsername,
-                    isFromMe: false,
-                  )
-                : Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: _getMessageBubbleColor(context),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: SelectableText(
-                      _cleanString(_getDisplayContent()),
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            if (widget.message.localType == 34)
+              VoiceMessageWidget(
+                message: widget.message,
+                sessionUsername: widget.sessionUsername,
+                isFromMe: false,
+              )
+            else if (widget.message.hasImage)
+              ImageMessageWidget(
+                message: widget.message,
+                sessionUsername: widget.sessionUsername,
+                isFromMe: false,
+              )
+            else
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: _getMessageBubbleColor(context),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: SelectableText(
+                  _cleanString(_getDisplayContent()),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: _getMessageTextColor(context),
+                        fontWeight: FontWeight.w600,
                       ),
-                    ),
-                  ),
+                ),
+              ),
             // 引用消息（放在下方）
             if (widget.message.quotedContent.isNotEmpty)
               Container(

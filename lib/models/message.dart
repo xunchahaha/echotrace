@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:zstd/zstd.dart';
 import '../utils/xml_message_parser.dart';
+import '../services/logger_service.dart';
 
 /// 消息数据模型
 class Message {
@@ -30,6 +31,8 @@ class Message {
   final String? myWxid;
   // 拍一拍消息的解析信息（模板和需要查询的wxid列表）
   final Map<String, dynamic>? patInfo;
+  // 语音时长（秒）
+  final int? voiceDurationSeconds;
   // 解析后的显示内容
   final String _parsedContent;
 
@@ -59,8 +62,19 @@ class Message {
     this.imageMd5,
     this.myWxid,
     this.patInfo,
+    this.voiceDurationSeconds,
     required String parsedContent,
   }) : _parsedContent = parsedContent;
+
+  static int? _parseVoiceDurationSeconds(String input) {
+    if (input.isEmpty) return null;
+    final n = double.tryParse(input);
+    if (n == null) return null;
+    if (n <= 0) return null;
+    // 如果非常大，认为是毫秒，转秒
+    final seconds = n > 600 ? n / 1000.0 : n.toDouble();
+    return seconds.round();
+  }
 
   /// 从数据库Map创建Message对象
   factory Message.fromMap(Map<String, dynamic> map, {String? myWxid}) {
@@ -145,6 +159,7 @@ class Message {
     final senderUsername = _safeStringFromMap(map, 'sender_username');
     final senderDisplayName = _safeStringFromMap(map, 'sender_display_name');
     int? isSendVal = _readIsSend(map);
+    int? voiceDurationSeconds;
 
     // 步骤2：根据localType解析内容
     final parsedContent = _parseMessageContent(
@@ -156,6 +171,41 @@ class Message {
       senderDisplayName: senderDisplayName.isEmpty ? null : senderDisplayName,
       isSendFlag: isSendVal ?? nullableIntValue(['is_send', 'isSend']),
     );
+
+    // 语音时长：仅从消息内容/解析结果提取，不依赖解密文件
+    if (localType == 34) {
+      // 优先从 XML 属性提取，兼容多种字段名
+      final attrs = ['voicelength', 'length', 'time', 'playlength'];
+      String durationStr = '';
+      for (final attr in attrs) {
+        durationStr = _extractDurationFromXml(actualContent, attr).trim();
+        if (durationStr.isNotEmpty) break;
+      }
+      if (durationStr.isEmpty) {
+        for (final attr in attrs) {
+          durationStr = _extractDurationFromXml(messageContent, attr).trim();
+          if (durationStr.isNotEmpty) break;
+        }
+      }
+      voiceDurationSeconds = _parseVoiceDurationSeconds(durationStr);
+
+      // Fallback: 从解析后的文本提取 "语音 X秒"
+      if (voiceDurationSeconds == null) {
+        final m = RegExp(r'语音\s*(\d+)\s*秒').firstMatch(parsedContent);
+        if (m != null) {
+          voiceDurationSeconds = _parseVoiceDurationSeconds(m.group(1)!);
+        }
+      }
+
+      // 调试日志
+      logger.debug(
+        'Message',
+        'voice msg parsed: localId=${intValue(['local_id'])} '
+        'create=${intValue(['create_time'])} '
+        'sender=$senderUsername '
+        'durationStr="$durationStr" -> $voiceDurationSeconds',
+      );
+    }
 
     // 提取图片MD5（如果是图片消息）
     String? imageMd5;
@@ -221,6 +271,7 @@ class Message {
       imageMd5: imageMd5,
       myWxid: myWxid,
       patInfo: patInfo,
+      voiceDurationSeconds: voiceDurationSeconds,
       parsedContent: parsedContent,
     );
   }
@@ -566,23 +617,20 @@ class Message {
     if (xml.isEmpty) return '';
 
     try {
+      // 兼容形如 voicelength="16765" 或 length=31264
       final pattern = RegExp(
-        '$attributeName["\\s]*=["\\s]*(\\d+)',
+        '$attributeName\\s*=\\s*\"?(\\d+(?:\\.\\d+)?)\"?',
         caseSensitive: false,
       );
       final match = pattern.firstMatch(xml);
       if (match == null) return '';
 
-      final rawValue = int.tryParse(match.group(1) ?? '');
-      if (rawValue == null) return '';
+      final rawStr = match.group(1) ?? '';
+      final raw = double.tryParse(rawStr);
+      if (raw == null) return '';
 
-      // 微信语音/视频时长通常以毫秒存储，偶尔会以秒存储（小值）
-      final isMilliseconds = rawValue > 1000;
-      final seconds = isMilliseconds
-          ? rawValue / 1000.0
-          : rawValue.toDouble();
-
-      // 尽量显示简洁的秒数：整数直接展示，带小数的一位小数
+      // 微信语音时长通常毫秒，大于 1000 认为是毫秒
+      final seconds = raw > 1000 ? raw / 1000.0 : raw;
       if ((seconds - seconds.round()).abs() < 0.05) {
         return seconds.round().toString();
       }
@@ -961,21 +1009,84 @@ class Message {
         final referMsgXml = xml.substring(referMsgStart, referMsgEnd + 11);
         final referredContent = _extractValueFromXml(referMsgXml, 'content');
         final displayName = _extractValueFromXml(referMsgXml, 'displayname');
+        final type = _extractValueFromXml(referMsgXml, 'type');
 
-        // 只显示简短的纯文本引用内容，过滤XML和过长内容
-        if (referredContent.isNotEmpty &&
-            referredContent.length < 200 &&
-            !referredContent.contains('<')) {
-          return displayName.isNotEmpty
-              ? '$displayName: $referredContent'
-              : referredContent;
-        }
+        // 按类型渲染引用消息，避免显示wxid/文件名等原始信息
+        final rendered = _renderQuotedContentByType(
+          referredContent,
+          type,
+        );
+        if (rendered.isEmpty) return '';
+
+        final cleanDisplayName =
+            displayName.isNotEmpty && !_looksLikeWxid(displayName)
+                ? displayName
+                : '';
+
+        return cleanDisplayName.isNotEmpty
+            ? '$cleanDisplayName: $rendered'
+            : rendered;
       }
     } catch (e) {
       // 解析失败时静默处理
     }
 
     return '';
+  }
+
+  /// 判断字符串是否像wxid（用于隐藏引用消息中的原始wxid）
+  static bool _looksLikeWxid(String text) {
+    final trimmed = text.trim().toLowerCase();
+    if (trimmed.isEmpty) return false;
+    if (trimmed.startsWith('wxid_')) return true;
+    return RegExp(r'^wx[a-z0-9_-]{4,}$').hasMatch(trimmed);
+  }
+
+  /// 清理引用消息内容中的wxid和多余分隔符
+  static String _sanitizeQuotedContent(String content) {
+    if (content.isEmpty) return '';
+    var result = content;
+
+    // 去掉所有 wxid_xxx 片段
+    result = result.replaceAll(RegExp(r'wxid_[A-Za-z0-9_-]{3,}'), '');
+
+    // 去掉开头的分隔符（冒号/空格等）
+    result = result.replaceFirst(RegExp(r'^[\s:：\-]+'), '');
+
+    // 折叠重复的分隔符
+    result = result.replaceAll(RegExp(r'[:：]{2,}'), ':');
+    result = result.replaceFirst(RegExp(r'^[\s:：\-]+'), '');
+
+    // 标准化空白
+    result = result.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return result;
+  }
+
+  /// 根据引用消息类型渲染文本，防止暴露wxid/文件名
+  static String _renderQuotedContentByType(
+    String rawContent,
+    String type,
+  ) {
+    switch (type) {
+      case '1': // 文本
+      case '':
+        return _sanitizeQuotedContent(rawContent);
+      case '3':
+        return '[图片]';
+      case '34': // 语音
+        return '[语音]';
+      case '43': // 视频
+        return '[视频]';
+      case '47': // 动画表情
+        return '[动画表情]';
+      case '48': // 位置
+        return '[位置]';
+      case '49': // 链接或小程序
+        return '[链接]';
+      default:
+        // 非文本类型不展示文件名，兜底使用已清理的文本
+        return _sanitizeQuotedContent(rawContent);
+    }
   }
 
   @override

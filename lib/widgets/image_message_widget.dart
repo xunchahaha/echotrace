@@ -215,20 +215,20 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
       ),
       child: Material(
         color: bubbleColor,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         child: InkWell(
           onTap: _isDecrypting ? null : _decryptOnDemand,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 if (_isDecrypting)
                   SizedBox(
-                    width: 18,
-                    height: 18,
+                    width: 20,
+                    height: 20,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
                       valueColor: AlwaysStoppedAnimation<Color>(textColor),
@@ -237,12 +237,12 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
                 else
                   Icon(
                     Icons.lock_open_rounded,
-                    size: 18,
+                    size: 20,
                     color: isFromMe
                         ? Colors.white.withValues(alpha: 0.9)
                         : textColor.withValues(alpha: 0.9),
                   ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Flexible(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,

@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:crypto/crypto.dart';
@@ -59,6 +60,12 @@ class DatabaseService {
   List<String>? _cachedMessageDbPaths;
   DateTime? _messageDbCacheTime;
   static const Duration _messageDbCacheDuration = Duration(seconds: 60);
+
+  // 媒体库（media_*.db）缓存
+  final Map<String, Database> _cachedMediaDbs = {};
+  List<String>? _cachedMediaDbPaths;
+  DateTime? _mediaDbCacheTime;
+  static const Duration _mediaDbCacheDuration = Duration(minutes: 5);
 
   /// 获取当前数据库路径
   String? get dbPath => _sessionDbPath;
@@ -3641,6 +3648,59 @@ class DatabaseService {
     return messageDbs;
   }
 
+  /// 查找所有媒体数据库（media_*.db），用于语音/图片等附件
+  Future<List<String>> _findAllMediaDbs() async {
+    if (_cachedMediaDbPaths != null &&
+        _mediaDbCacheTime != null &&
+        DateTime.now().difference(_mediaDbCacheTime!) < _mediaDbCacheDuration) {
+      return List<String>.from(_cachedMediaDbPaths!);
+    }
+
+    final List<String> mediaDbs = [];
+
+    if (_sessionDbPath != null) {
+      final wxidDir = _findWxidDirFromPath(_sessionDbPath!);
+      if (wxidDir != null) {
+        for (int i = 0; i < 100; i++) {
+          final candidatePath = PathUtils.join(wxidDir.path, 'media_$i.db');
+          final candidate = File(candidatePath);
+          if (candidate.existsSync()) {
+            mediaDbs.add(PathUtils.normalizeDatabasePath(candidate.path));
+          }
+        }
+        if (mediaDbs.isNotEmpty) {
+          _cachedMediaDbPaths = mediaDbs.toList();
+          _mediaDbCacheTime = DateTime.now();
+          return mediaDbs;
+        }
+      }
+    }
+
+    // 兜底：EchoTrace 导出的账号目录
+    final documentsDir = await getApplicationDocumentsDirectory();
+    final echoTracePath = PathUtils.join(documentsDir.path, 'EchoTrace');
+    final echoTraceDir = Directory(echoTracePath);
+    if (await echoTraceDir.exists()) {
+      final wxidDirs = await echoTraceDir
+          .list()
+          .where((e) => e is Directory)
+          .toList();
+      for (final dir in wxidDirs) {
+        for (int i = 0; i < 100; i++) {
+          final mediaDbPath = PathUtils.join(dir.path, 'media_$i.db');
+          final mediaDbFile = File(mediaDbPath);
+          if (await mediaDbFile.exists()) {
+            mediaDbs.add(PathUtils.normalizeDatabasePath(mediaDbFile.path));
+          }
+        }
+      }
+    }
+
+    _cachedMediaDbPaths = mediaDbs.toList();
+    _mediaDbCacheTime = DateTime.now();
+    return mediaDbs;
+  }
+
   Future<String?> _locateMessageDbPathNearSession() async {
     final allDbs = await _findAllMessageDbs();
     if (allDbs.isEmpty) return null;
@@ -3838,6 +3898,146 @@ class DatabaseService {
     _cacheLastUsed = null;
     _cachedMessageDbPaths = null;
     _messageDbCacheTime = null;
+
+    for (final db in _cachedMediaDbs.values) {
+      try {
+        await db.close();
+      } catch (_) {}
+    }
+    _cachedMediaDbs.clear();
+    _cachedMediaDbPaths = null;
+    _mediaDbCacheTime = null;
+  }
+
+  /// 读取语音原始数据（silk blob），通过 sender wxid + create_time 定位 VoiceInfo。
+  /// 仅支持解密模式（WCDB 实时模式暂不查 media 库）。
+  Future<Uint8List?> fetchVoiceData({
+    required String senderWxid,
+    required int createTime,
+  }) async {
+    if (_mode == DatabaseMode.realtime) {
+      await logger.warning(
+        'DatabaseService',
+        '当前是实时模式，暂不支持读取 media_* 语音数据',
+      );
+      return null;
+    }
+
+    final mediaDbs = await _findAllMediaDbs();
+    if (mediaDbs.isEmpty) {
+      await logger.warning('DatabaseService', '未找到任何 media_*.db，无法读取语音');
+      return null;
+    }
+
+    for (final dbPath in mediaDbs) {
+      try {
+        final db = await _openMediaDb(dbPath);
+        final chatNameId = await _resolveChatNameId(db, senderWxid);
+
+        if (chatNameId == null) continue;
+
+        final voiceRows = await db.rawQuery(
+          'SELECT voice_data FROM VoiceInfo WHERE chat_name_id = ? AND create_time = ? LIMIT 1',
+          [chatNameId, createTime],
+        );
+        if (voiceRows.isEmpty) continue;
+
+        final data = _blobToBytes(voiceRows.first['voice_data']);
+        if (data != null) {
+          await logger.debug(
+            'DatabaseService',
+            '找到语音数据: db=$dbPath, chat_name_id=$chatNameId, create_time=$createTime, bytes=${data.length}',
+          );
+          return data;
+        }
+      } catch (e, stackTrace) {
+        await logger.error(
+          'DatabaseService',
+          '读取媒体库 $dbPath 语音数据失败',
+          e,
+          stackTrace,
+        );
+      }
+    }
+
+    await logger.warning(
+      'DatabaseService',
+      '未找到匹配的语音数据 sender=$senderWxid create_time=$createTime',
+    );
+    return null;
+  }
+
+  Future<Database> _openMediaDb(String path) async {
+    if (_cachedMediaDbs.containsKey(path)) {
+      return _cachedMediaDbs[path]!;
+    }
+    final db = await _currentFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+    );
+    _cachedMediaDbs[path] = db;
+    return db;
+  }
+
+  int? _asInt(dynamic v) {
+    if (v == null) return null;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString());
+  }
+
+  Uint8List? _blobToBytes(dynamic blob) {
+    if (blob == null) return null;
+    if (blob is Uint8List) return blob;
+    if (blob is List<int>) return Uint8List.fromList(blob);
+    if (blob is String) {
+      try {
+        return Uint8List.fromList(utf8.encode(blob));
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /// 解析 Name2Id 的 chat_name_id：兼容不同表结构（name_id 列或使用 rowid）
+  Future<int?> _resolveChatNameId(Database db, String senderWxid) async {
+    // 检查表结构
+    final info = await db.rawQuery("PRAGMA table_info('Name2Id')");
+    final columns = info.map((e) => e['name']?.toString()).toSet();
+
+    if (columns.contains('name_id')) {
+      final rows = await db.rawQuery(
+        'SELECT name_id FROM Name2Id WHERE user_name = ? LIMIT 1',
+        [senderWxid],
+      );
+      if (rows.isNotEmpty) {
+        return _asInt(rows.first['name_id']);
+      }
+    }
+
+    if (columns.contains('id')) {
+      final rows = await db.rawQuery(
+        'SELECT id FROM Name2Id WHERE user_name = ? LIMIT 1',
+        [senderWxid],
+      );
+      if (rows.isNotEmpty) {
+        return _asInt(rows.first['id']);
+      }
+    }
+
+    // 兜底：使用 rowid
+    try {
+      final rows = await db.rawQuery(
+        'SELECT rowid FROM Name2Id WHERE user_name = ? LIMIT 1',
+        [senderWxid],
+      );
+      if (rows.isNotEmpty) {
+        return _asInt(rows.first['rowid']);
+      }
+    } catch (_) {}
+
+    return null;
   }
 
   /// 获取会话的详细信息（包括所在表、加好友时间等）
