@@ -561,7 +561,7 @@ class _SettingsPageState extends State<SettingsPage>
       _initialKey = key;
       _initialPath = path;
       _initialMode = _databaseMode;
-      _initialWxid = wxid;
+      _initialWxid = wxidNormalized;
       _initialImageXorKey = imageXorKey;
       _initialImageAesKey = imageAesKey;
       _lastWxidPathChecked = path;
