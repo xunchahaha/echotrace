@@ -1,6 +1,9 @@
+import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../services/image_service.dart';
@@ -12,6 +15,18 @@ import 'package:path_provider/path_provider.dart';
 import '../services/logger_service.dart';
 
 enum _ImageVariant { big, original, high, cache, thumb, other }
+
+Future<List<String>> _scanDecryptedImages(String rootPath) async {
+  final root = Directory(rootPath);
+  if (!await root.exists()) return const [];
+  final paths = <String>[];
+  await for (final entity in root.list(recursive: true, followLinks: false)) {
+    if (entity is File) {
+      paths.add(entity.path);
+    }
+  }
+  return paths;
+}
 
 /// 图片消息组件 - 显示聊天中的图片
 class ImageMessageWidget extends StatefulWidget {
@@ -43,6 +58,11 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
   static final Map<String, Map<_ImageVariant, String>> _decryptedVariantIndex =
       {};
   static final Set<String> _invalidImagePaths = {};
+  static DateTime? _lastIndexBuildAt;
+  static const Duration _indexRefreshCooldown = Duration(seconds: 20);
+  static const int _decodeConcurrency = 2;
+  static int _decodeInFlight = 0;
+  static final Queue<Completer<void>> _decodeWaiters = Queue();
   static const List<_ImageVariant> _variantPriority = [
     _ImageVariant.big,
     _ImageVariant.original,
@@ -182,6 +202,9 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
             child: Image.file(
               File(_imagePath!),
               fit: BoxFit.cover,
+              cacheWidth: 600,
+              filterQuality: FilterQuality.low,
+              gaplessPlayback: true,
               errorBuilder: (context, error, stackTrace) {
                 return Container(
                   width: 150,
@@ -347,16 +370,12 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     if (!_indexed) {
       await _ensureDecryptedIndex();
     }
-    final variants = _decryptedVariantIndex[key];
-    if (variants == null || variants.isEmpty) return null;
+    final resolved = await _resolveFromIndex(key);
+    if (resolved != null || !refresh) return resolved;
 
-    for (final path in _orderedVariantPaths(variants)) {
-      if (_invalidImagePaths.contains(path)) continue;
-      if (await _isImageUsable(path)) {
-        _decryptedIndex[key] = path;
-        return path;
-      }
-      _invalidImagePaths.add(path);
+    if (_shouldRefreshIndex()) {
+      await _rebuildDecryptedIndex();
+      return _resolveFromIndex(key);
     }
     return null;
   }
@@ -377,20 +396,74 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
           Directory(p.join(docs.path, 'EchoTrace', 'Images'));
       if (!await imagesRoot.exists()) return;
 
-      await for (final entity
-          in imagesRoot.list(recursive: true, followLinks: false)) {
-        if (entity is! File) continue;
-        final base = p.basenameWithoutExtension(entity.path).toLowerCase();
+      List<String> paths;
+      try {
+        paths = kIsWeb
+            ? const []
+            : await compute(_scanDecryptedImages, imagesRoot.path);
+      } catch (_) {
+        paths = await _scanDecryptedImages(imagesRoot.path);
+      }
+
+      for (final path in paths) {
+        final base = p.basenameWithoutExtension(path).toLowerCase();
         final normalized = _normalizeBaseName(base);
         final variant = _detectVariant(base);
-        _indexDecryptedVariant(normalized, variant, entity.path);
+        _indexDecryptedVariant(normalized, variant, path);
       }
     } catch (_) {
       // 忽略索引失败，但允许后续重建
       _indexed = false;
     } finally {
+      if (_indexed) {
+        _lastIndexBuildAt = DateTime.now();
+      }
       _indexing = null;
     }
+  }
+
+  bool _shouldRefreshIndex() {
+    if (_lastIndexBuildAt == null) return true;
+    return DateTime.now().difference(_lastIndexBuildAt!) >
+        _indexRefreshCooldown;
+  }
+
+  Future<void> _rebuildDecryptedIndex() async {
+    _indexed = false;
+    _indexing = null;
+    await _ensureDecryptedIndex();
+  }
+
+  Future<T> _withDecodePermit<T>(Future<T> Function() action) async {
+    if (_decodeInFlight >= _decodeConcurrency) {
+      final completer = Completer<void>();
+      _decodeWaiters.add(completer);
+      await completer.future;
+    }
+    _decodeInFlight += 1;
+    try {
+      return await action();
+    } finally {
+      _decodeInFlight -= 1;
+      if (_decodeWaiters.isNotEmpty) {
+        _decodeWaiters.removeFirst().complete();
+      }
+    }
+  }
+
+  Future<String?> _resolveFromIndex(String key) async {
+    final variants = _decryptedVariantIndex[key];
+    if (variants == null || variants.isEmpty) return null;
+
+    for (final path in _orderedVariantPaths(variants)) {
+      if (_invalidImagePaths.contains(path)) continue;
+      if (await _isImageUsable(path)) {
+        _decryptedIndex[key] = path;
+        return path;
+      }
+      _invalidImagePaths.add(path);
+    }
+    return null;
   }
 
   void _indexDecryptedVariant(
@@ -444,19 +517,25 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
   }
 
   Future<bool> _isImageUsable(String path) async {
-    try {
-      final file = File(path);
-      if (!await file.exists()) return false;
-      final bytes = await file.readAsBytes();
-      if (bytes.isEmpty) return false;
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      frame.image.dispose();
-      codec.dispose();
-      return true;
-    } catch (_) {
-      return false;
-    }
+    return _withDecodePermit(() async {
+      try {
+        final file = File(path);
+        if (!await file.exists()) return false;
+        final bytes = await file.readAsBytes();
+        if (bytes.isEmpty) return false;
+        final codec = await ui.instantiateImageCodec(
+          bytes,
+          targetWidth: 8,
+          targetHeight: 8,
+        );
+        final frame = await codec.getNextFrame();
+        frame.image.dispose();
+        codec.dispose();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    });
   }
 
   void _rememberDecryptedFile(String path) {

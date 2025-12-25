@@ -66,13 +66,6 @@ class _GroupMediaStatsContentState extends State<GroupMediaStatsContent> {
     if (!mounted) return;
     setState(() { _isLoading = true; _mediaData = null; });
 
-    // --- UI层日志 ---
-    print('--- [UI Layer - MediaStats] ---');
-    print('开始请求媒体统计数据...');
-    print('Chatroom ID: ${widget.groupInfo.username}');
-    print('Start Date: ${_startDate.toLocal().toIso8601String()}');
-    print('End Date: ${_endDate.toLocal().toIso8601String()}');
-    print('------------------------------------');
 
     try {
       final data = await _groupChatService.getGroupMediaTypeStats(
@@ -81,15 +74,10 @@ class _GroupMediaStatsContentState extends State<GroupMediaStatsContent> {
         endDate: _endDate,
       );
 
-      // --- UI层日志 ---
-      print('--- [UI Layer - MediaStats] ---');
-      print('收到来自服务层的数据: $data');
-      print('------------------------------------');
 
       if (!mounted) return;
       setState(() { _mediaData = data; _isLoading = false; });
     } catch (e) {
-      print('[UI Layer - MediaStats] 发生错误: $e');
       if (!mounted) return;
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成统计失败: $e')));

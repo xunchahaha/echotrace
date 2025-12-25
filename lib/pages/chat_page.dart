@@ -2940,7 +2940,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
                         } else {
                           sessionChild = ListView.builder(
                             key: const ValueKey('session-list'),
-                            cacheExtent: 600,
+                            cacheExtent: 400,
                             addAutomaticKeepAlives: false,
                             keyboardDismissBehavior:
                                 ScrollViewKeyboardDismissBehavior.onDrag,
@@ -3119,7 +3119,7 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
                                                 padding: const EdgeInsets.all(
                                                   16,
                                                 ),
-                                                cacheExtent: 800,
+                                                cacheExtent: 400,
                                                 addAutomaticKeepAlives: false,
                                                 itemCount:
                                                     _messages.length + 1,

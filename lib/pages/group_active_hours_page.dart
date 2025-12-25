@@ -52,11 +52,6 @@ class _GroupActiveHoursContentState extends State<GroupActiveHoursContent> {
     if (!mounted) return;
     setState(() { _isLoading = true; _hourlyData = null; });
     
-    // --- 使用 print() 强制打印日志 ---
-    print('--- [ActiveHoursPage] Fetching data ---');
-    print('Chatroom ID: ${widget.groupInfo.username}');
-    print('Start Date: ${_startDate.toIso8601String()}');
-    print('End Date (adjusted): ${_endDate.add(const Duration(days: 1)).toIso8601String()}');
     
     try {
       final data = await _groupChatService.getGroupActiveHours(
@@ -65,13 +60,11 @@ class _GroupActiveHoursContentState extends State<GroupActiveHoursContent> {
         endDate: _endDate.add(const Duration(days: 1)),
       );
 
-      // --- 打印返回的数据 ---
-      print('[ActiveHoursPage] Data received: $data');
 
       if (!mounted) return;
       setState(() { _hourlyData = data; _isLoading = false; });
     } catch (e) {
-      print('[ActiveHoursPage] Error fetching data: $e'); // 打印错误
+      // 打印错误
       if (!mounted) return;
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成图表失败: $e')));
