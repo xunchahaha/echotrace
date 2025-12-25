@@ -52,6 +52,7 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     _ImageVariant.other,
   ];
   static bool _indexed = false;
+  static Future<void>? _indexing;
 
   @override
   void initState() {
@@ -68,12 +69,6 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
       final imageService = ImageService();
       // 预取会话展示名用于路径美化
       await _loadDisplayName(appState);
-
-      // 每次加载都刷新索引，避免缓存不到新解密的图片（含 cache）
-      _indexed = false;
-      _decryptedIndex.clear();
-      _decryptedVariantIndex.clear();
-      _invalidImagePaths.clear();
 
       // 初始化图片服务
       final dataPath = appState.databaseService.currentDataPath;
@@ -350,7 +345,7 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     }
 
     if (!_indexed) {
-      await _buildDecryptedIndex();
+      await _ensureDecryptedIndex();
     }
     final variants = _decryptedVariantIndex[key];
     if (variants == null || variants.isEmpty) return null;
@@ -364,6 +359,12 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
       _invalidImagePaths.add(path);
     }
     return null;
+  }
+
+  Future<void> _ensureDecryptedIndex() async {
+    if (_indexed) return;
+    _indexing ??= _buildDecryptedIndex();
+    await _indexing;
   }
 
   Future<void> _buildDecryptedIndex() async {
@@ -385,7 +386,10 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
         _indexDecryptedVariant(normalized, variant, entity.path);
       }
     } catch (_) {
-      // 忽略索引失败
+      // 忽略索引失败，但允许后续重建
+      _indexed = false;
+    } finally {
+      _indexing = null;
     }
   }
 

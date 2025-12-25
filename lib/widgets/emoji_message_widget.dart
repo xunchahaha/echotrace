@@ -38,24 +38,28 @@ class _EmojiMessageWidgetState extends State<EmojiMessageWidget> {
   void didUpdateWidget(covariant EmojiMessageWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.message.localId != widget.message.localId ||
-        oldWidget.message.emojiCdnUrl != widget.message.emojiCdnUrl) {
+        oldWidget.message.emojiCdnUrl != widget.message.emojiCdnUrl ||
+        oldWidget.message.emojiMd5 != widget.message.emojiMd5) {
       _loadEmoji();
     }
   }
 
   Future<void> _loadEmoji() async {
     final url = widget.message.emojiCdnUrl;
-    if (url == null || url.isEmpty) {
+    final md5 = widget.message.emojiMd5;
+    final hasUrl = url != null && url.isNotEmpty;
+    final hasMd5 = md5 != null && md5.isNotEmpty;
+    if (!hasUrl && !hasMd5) {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _errorMessage = '未获取到动画表情链接';
+          _errorMessage = '未获取到动画表情信息';
         });
       }
       return;
     }
 
-    final cacheKey = _cacheKey(url, widget.message.emojiMd5);
+    final cacheKey = _cacheKey(url ?? '', md5);
     final cached = _cachedPaths[cacheKey];
     if (cached != null && await File(cached).exists()) {
       if (mounted) {
@@ -75,8 +79,8 @@ class _EmojiMessageWidgetState extends State<EmojiMessageWidget> {
 
     final existing = await _findExistingCache(
       emojiDir,
-      widget.message.emojiMd5,
-      url,
+      md5,
+      url ?? '',
     );
     if (existing != null) {
       _cachedPaths[cacheKey] = existing;
@@ -89,11 +93,21 @@ class _EmojiMessageWidgetState extends State<EmojiMessageWidget> {
       return;
     }
 
+    if (!hasUrl) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = '未找到本地动画表情缓存';
+        });
+      }
+      return;
+    }
+
     Future<String?> future;
     if (_inflight.containsKey(cacheKey)) {
       future = _inflight[cacheKey]!;
     } else {
-      future = _downloadAndCache(emojiDir, url, widget.message.emojiMd5);
+      future = _downloadAndCache(emojiDir, url, md5);
       _inflight[cacheKey] = future;
     }
 
