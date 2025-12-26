@@ -228,11 +228,6 @@ class AppState extends ChangeNotifier {
     return hasLeadingSep ? '$sep$rebuilt' : rebuilt;
   }
 
-  String? _normalizeWxid(String? wxid) {
-    if (wxid == null || wxid.isEmpty) return null;
-    return wxid.toLowerCase().replaceAll(RegExp(r'[_\\-\\s]'), '');
-  }
-
   String _detectImageQuality(String relativePath, int fileSize) {
     final pathLower = relativePath.toLowerCase();
     final fileNameLower = relativePath.split(Platform.pathSeparator).last.toLowerCase();
