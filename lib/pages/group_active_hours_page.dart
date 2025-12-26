@@ -60,7 +60,6 @@ class _GroupActiveHoursContentState extends State<GroupActiveHoursContent> {
         endDate: _endDate.add(const Duration(days: 1)),
       );
 
-
       if (!mounted) return;
       setState(() { _hourlyData = data; _isLoading = false; });
     } catch (e) {

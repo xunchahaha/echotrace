@@ -2414,16 +2414,29 @@ class _ChatPageState extends State<ChatPage> with TickerProviderStateMixin {
     if (base.endsWith('.dat') || base.endsWith('.jpg')) {
       base = base.substring(0, base.length - 4);
     }
-    for (final suffix in ['.b', '.h', '.t', '.c', '.w', '.l']) {
-      if (base.endsWith(suffix)) {
-        base = base.substring(0, base.length - suffix.length);
-        break;
-      }
-    }
-    for (final suffix in ['_b', '_h', '_t', '_c', '_w', '_l']) {
-      if (base.endsWith(suffix)) {
-        base = base.substring(0, base.length - suffix.length);
-        break;
+    var changed = true;
+    const suffixes = [
+      '.b',
+      '.h',
+      '.t',
+      '.c',
+      '.w',
+      '.l',
+      '_b',
+      '_h',
+      '_t',
+      '_c',
+      '_w',
+      '_l',
+    ];
+    while (changed) {
+      changed = false;
+      for (final suffix in suffixes) {
+        if (base.endsWith(suffix)) {
+          base = base.substring(0, base.length - suffix.length);
+          changed = true;
+          break;
+        }
       }
     }
     return base;
