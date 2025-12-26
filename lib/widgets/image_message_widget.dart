@@ -489,13 +489,13 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     if (base.endsWith('.dat') || base.endsWith('.jpg')) {
       base = base.substring(0, base.length - 4);
     }
-    for (final suffix in ['.b', '.h', '.t', '.c']) {
+    for (final suffix in ['.b', '.h', '.t', '.c', '.w', '.l']) {
       if (base.endsWith(suffix)) {
         base = base.substring(0, base.length - suffix.length);
         break;
       }
     }
-    for (final suffix in ['_b', '_h', '_t', '_c']) {
+    for (final suffix in ['_b', '_h', '_t', '_c', '_w', '_l']) {
       if (base.endsWith(suffix)) {
         base = base.substring(0, base.length - suffix.length);
         break;
@@ -509,10 +509,14 @@ class _ImageMessageWidgetState extends State<ImageMessageWidget> {
     if (base.endsWith('.t')) return _ImageVariant.thumb;
     if (base.endsWith('.h')) return _ImageVariant.high;
     if (base.endsWith('.c')) return _ImageVariant.cache;
+    if (base.endsWith('.w')) return _ImageVariant.big;
+    if (base.endsWith('.l')) return _ImageVariant.big;
     if (base.endsWith('_b')) return _ImageVariant.big;
     if (base.endsWith('_t')) return _ImageVariant.thumb;
     if (base.endsWith('_h')) return _ImageVariant.high;
     if (base.endsWith('_c')) return _ImageVariant.cache;
+    if (base.endsWith('_w')) return _ImageVariant.big;
+    if (base.endsWith('_l')) return _ImageVariant.big;
     return _ImageVariant.original;
   }
 
