@@ -1278,6 +1278,32 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
     _reportUrl = null;
   }
 
+  void _resetToSelection() {
+    _stopReportServer();
+    setState(() {
+      _selectedFriend = null;
+      _reportData = null;
+      _reportHtml = null;
+      _errorMessage = null;
+      _isGenerating = false;
+      _isHtmlLoading = false;
+      _isOpeningBrowser = false;
+      _didAutoOpen = false;
+    });
+  }
+
+  void _handleBack() {
+    if (_selectedFriend != null ||
+        _reportHtml != null ||
+        _errorMessage != null ||
+        _isGenerating ||
+        _isHtmlLoading) {
+      _resetToSelection();
+      return;
+    }
+    widget.onClose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -1311,7 +1337,7 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
       child: Row(
         children: [
           IconButton(
-            onPressed: widget.onClose,
+            onPressed: _handleBack,
             icon: const Icon(Icons.arrow_back),
             tooltip: '返回数据分析',
           ),
@@ -1667,7 +1693,7 @@ class _DualReportSubPageState extends State<_DualReportSubPage> {
                     ),
                     const SizedBox(height: 16),
                     TextButton(
-                      onPressed: widget.onClose,
+                      onPressed: _handleBack,
                       style: TextButton.styleFrom(foregroundColor: Colors.grey),
                       child: const Text('关闭'),
                     ),
