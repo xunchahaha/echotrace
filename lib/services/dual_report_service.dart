@@ -47,44 +47,58 @@ class DualReportService {
   /// 获取我的微信显示名称
   Future<String> _getMyDisplayName(String myWxid) async {
     try {
+      // 检查myWxid是否为空
+      if (myWxid.isEmpty) {
+        return myWxid;
+      }
+
       // 从 contact 数据库获取所有联系人，找到自己的记录
       final contacts = await _databaseService.getAllContacts();
 
-      // 尝试精确匹配
-      final myContactRecord = contacts.firstWhere(
-        (c) => c.contact.username == myWxid,
-        orElse: () => contacts.firstWhere(
-          (c) => c.contact.username.contains(myWxid) || myWxid.contains(c.contact.username),
-          orElse: () => ContactRecord(
-            contact: Contact(
-              id: 0,
-              username: myWxid,
-              localType: 0,
-              alias: '',
-              encryptUsername: '',
-              flag: 0,
-              deleteFlag: 0,
-              verifyFlag: 0,
-              remark: '',
-              remarkQuanPin: '',
-              remarkPinYinInitial: '',
-              nickName: '',
-              pinYinInitial: '',
-              quanPin: '',
-              bigHeadUrl: '',
-              smallHeadUrl: '',
-              headImgMd5: '',
-              chatRoomNotify: 0,
-              isInChatRoom: 0,
-              description: '',
-              extraBuffer: [],
-              chatRoomType: 0,
-            ),
-            source: ContactRecognitionSource.friend,
-            origin: ContactDataOrigin.unknown,
+      // 构建username到ContactRecord的映射，提高查找效率
+      final contactMap = <String, ContactRecord>{};
+      for (final contactRecord in contacts) {
+        final username = contactRecord.contact.username;
+        if (username.isNotEmpty) {
+          contactMap[username] = contactRecord;
+        }
+      }
+
+      // 精确查找联系人
+      ContactRecord myContactRecord;
+      if (contactMap.containsKey(myWxid)) {
+        myContactRecord = contactMap[myWxid]!;
+      } else {
+        // 找不到精确匹配，创建默认ContactRecord
+        myContactRecord = ContactRecord(
+          contact: Contact(
+            id: 0,
+            username: myWxid,
+            localType: 0,
+            alias: '',
+            encryptUsername: '',
+            flag: 0,
+            deleteFlag: 0,
+            verifyFlag: 0,
+            remark: '',
+            remarkQuanPin: '',
+            remarkPinYinInitial: '',
+            nickName: '',
+            pinYinInitial: '',
+            quanPin: '',
+            bigHeadUrl: '',
+            smallHeadUrl: '',
+            headImgMd5: '',
+            chatRoomNotify: 0,
+            isInChatRoom: 0,
+            description: '',
+            extraBuffer: [],
+            chatRoomType: 0,
           ),
-        ),
-      );
+          source: ContactRecognitionSource.friend,
+          origin: ContactDataOrigin.unknown,
+        );
+      }
 
       // 使用 Contact 的 displayName getter（已处理 remark/nickName/alias 优先级）
       return myContactRecord.contact.displayName;
@@ -276,42 +290,58 @@ class DualReportService {
         throw Exception('无法获取当前用户信息');
       }
 
+      // 检查friendUsername是否为空
+      if (friendUsername.isEmpty) {
+        throw Exception('好友用户名不能为空');
+      }
+
       // 获取好友显示名称
       final contacts = await _databaseService.getAllContacts();
-      final friendContact = contacts.firstWhere(
-        (c) => c.contact.username == friendUsername,
-        orElse: () => contacts.firstWhere(
-          (c) => c.contact.username.contains(friendUsername) || friendUsername.contains(c.contact.username),
-          orElse: () => ContactRecord(
-            contact: Contact(
-              id: 0,
-              username: friendUsername,
-              localType: 0,
-              alias: '',
-              encryptUsername: '',
-              flag: 0,
-              deleteFlag: 0,
-              verifyFlag: 0,
-              remark: '',
-              remarkQuanPin: '',
-              remarkPinYinInitial: '',
-              nickName: '',
-              pinYinInitial: '',
-              quanPin: '',
-              bigHeadUrl: '',
-              smallHeadUrl: '',
-              headImgMd5: '',
-              chatRoomNotify: 0,
-              isInChatRoom: 0,
-              description: '',
-              extraBuffer: [],
-              chatRoomType: 0,
-            ),
-            source: ContactRecognitionSource.friend,
-            origin: ContactDataOrigin.unknown,
+
+      // 构建username到ContactRecord的映射，提高查找效率
+      final contactMap = <String, ContactRecord>{};
+      for (final contactRecord in contacts) {
+        final username = contactRecord.contact.username;
+        if (username.isNotEmpty) {
+          contactMap[username] = contactRecord;
+        }
+      }
+
+      // 精确查找联系人
+      ContactRecord friendContact;
+      if (contactMap.containsKey(friendUsername)) {
+        friendContact = contactMap[friendUsername]!;
+      } else {
+        // 找不到精确匹配，创建默认ContactRecord
+        friendContact = ContactRecord(
+          contact: Contact(
+            id: 0,
+            username: friendUsername,
+            localType: 0,
+            alias: '',
+            encryptUsername: '',
+            flag: 0,
+            deleteFlag: 0,
+            verifyFlag: 0,
+            remark: '',
+            remarkQuanPin: '',
+            remarkPinYinInitial: '',
+            nickName: '',
+            pinYinInitial: '',
+            quanPin: '',
+            bigHeadUrl: '',
+            smallHeadUrl: '',
+            headImgMd5: '',
+            chatRoomNotify: 0,
+            isInChatRoom: 0,
+            description: '',
+            extraBuffer: [],
+            chatRoomType: 0,
           ),
-        ),
-      );
+          source: ContactRecognitionSource.friend,
+          origin: ContactDataOrigin.unknown,
+        );
+      }
 
       final friendName = friendContact.contact.displayName;
 
@@ -343,52 +373,33 @@ class DualReportService {
       // 获取所有联系人信息以获取显示名称
       final allContacts = await _databaseService.getAllContacts();
 
+      // 构建username到ContactRecord的映射，提高查找效率
+      final contactMap = <String, ContactRecord>{};
+      for (final contactRecord in allContacts) {
+        final username = contactRecord.contact.username;
+        if (username.isNotEmpty) {
+          contactMap[username] = contactRecord;
+        }
+      }
+
       // 映射结果，添加显示名称
       final result = <Map<String, dynamic>>[];
       for (final contactData in topContacts) {
         final username = contactData['username'] as String? ?? '';
 
-        // 查找联系人的显示名称
-        String displayName = username;
-        try {
-          final contactRecord = allContacts.firstWhere(
-            (c) => c.contact.username == username,
-            orElse: () => allContacts.firstWhere(
-              (c) => c.contact.username.contains(username) || username.contains(c.contact.username),
-              orElse: () => ContactRecord(
-                contact: Contact(
-                  id: 0,
-                  username: username,
-                  localType: 0,
-                  alias: '',
-                  encryptUsername: '',
-                  flag: 0,
-                  deleteFlag: 0,
-                  verifyFlag: 0,
-                  remark: '',
-                  remarkQuanPin: '',
-                  remarkPinYinInitial: '',
-                  nickName: '',
-                  pinYinInitial: '',
-                  quanPin: '',
-                  bigHeadUrl: '',
-                  smallHeadUrl: '',
-                  headImgMd5: '',
-                  chatRoomNotify: 0,
-                  isInChatRoom: 0,
-                  description: '',
-                  extraBuffer: [],
-                  chatRoomType: 0,
-                ),
-                source: ContactRecognitionSource.friend,
-                origin: ContactDataOrigin.unknown,
-              ),
-            ),
-          );
-          displayName = contactRecord.contact.displayName;
-        } catch (e) {
-          // 如果找不到联系人，使用username作为显示名称
-          displayName = username;
+        String displayName;
+        if (username.isEmpty) {
+          // 空username，显示为"未知"
+          displayName = '未知';
+        } else {
+          // 精确查找联系人
+          final contactRecord = contactMap[username];
+          if (contactRecord != null) {
+            displayName = contactRecord.contact.displayName;
+          } else {
+            // 找不到精确匹配，使用username作为显示名称
+            displayName = username;
+          }
         }
 
         result.add({
