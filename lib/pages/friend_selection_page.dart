@@ -5,6 +5,7 @@ import '../services/database_service.dart';
 import '../services/advanced_analytics_service.dart';
 import '../models/advanced_analytics_data.dart';
 import '../providers/app_state.dart';
+import 'dual_report_browser_page.dart';
 
 /// 好友选择页面 - 用于双人报告
 class FriendSelectionPage extends StatefulWidget {
@@ -176,11 +177,15 @@ class _FriendSelectionPageState extends State<FriendSelectionPage> {
 
     return InkWell(
       onTap: () {
-        // TODO: 跳转到双人报告页面
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('已选择: ${friend.displayName}'),
-            duration: const Duration(seconds: 1),
+        // 跳转到双人报告页面
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => DualReportBrowserPage(
+              friendUsername: friend.username,
+              friendName: friend.displayName,
+              databaseService: widget.databaseService,
+            ),
           ),
         );
       },

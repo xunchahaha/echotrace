@@ -1,189 +1,210 @@
-import '../services/database_service.dart';
-import '../services/advanced_analytics_service.dart';
-import '../services/analytics_service.dart';
+import 'database_service.dart';
+import '../models/message.dart';
+import '../models/contact_record.dart';
+import '../models/contact.dart';
 
-/// 双人报告生成服务
+/// 双人报告数据服务
 class DualReportService {
   final DatabaseService _databaseService;
-  final AdvancedAnalyticsService _advancedAnalyticsService;
-  final AnalyticsService _analyticsService;
 
-  DualReportService(this._databaseService)
-    : _advancedAnalyticsService = AdvancedAnalyticsService(_databaseService),
-      _analyticsService = AnalyticsService(_databaseService);
+  DualReportService(this._databaseService);
 
-  /// 生成完整的双人报告
-  Future<Map<String, dynamic>> generateDualReport({
+  /// 生成双人报告数据
+  Future<Map<String, dynamic>> generateDualReportData({
     required String friendUsername,
-    int? filterYear,
+    required String friendName,
+    required String myName,
+    int? year,
   }) async {
-    // 更新过滤年份
-    _advancedAnalyticsService.setYearFilter(filterYear);
+    // 获取第一次聊天信息
+    final firstChat = await _getFirstChatInfo(friendUsername);
 
-    // 获取好友显示名
-    final displayNames = await _databaseService.getDisplayNames([
+    // 获取今年第一次聊天信息
+    final thisYearFirstChat = await _getThisYearFirstChatInfo(
       friendUsername,
-    ]);
-    final friendDisplayName = displayNames[friendUsername] ?? friendUsername;
-
-    // 1. 亲密度日历
-    final intimacyCalendar = await _advancedAnalyticsService
-        .generateIntimacyCalendar(friendUsername);
-
-    // 2. 对话天平
-    final conversationBalance = await _advancedAnalyticsService
-        .analyzeConversationBalance(friendUsername);
-
-    // 3. 最长连聊记录
-    final longestStreakRaw = await _advancedAnalyticsService.findLongestStreak(
-      friendUsername,
+      friendName,
+      year ?? DateTime.now().year,
     );
 
-    // 转换DateTime为字符串
-    final longestStreak = {
-      'days': longestStreakRaw['days'],
-      'startDate': longestStreakRaw['startDate'] != null
-          ? (longestStreakRaw['startDate'] as DateTime).toIso8601String()
-          : null,
-      'endDate': longestStreakRaw['endDate'] != null
-          ? (longestStreakRaw['endDate'] as DateTime).toIso8601String()
-          : null,
-    };
-
-    // 4. 基础统计
-    final messageStats = await _databaseService.getSessionMessageStats(
-      friendUsername,
-      filterYear: filterYear,
-    );
-
-    // 5. 第一次聊天时间
-    final allMessages = await _analyticsService.getAllMessagesForSession(
-      friendUsername,
-    );
-    DateTime? firstChatTime;
-    DateTime? lastChatTime;
-    if (allMessages.isNotEmpty) {
-      // 按时间排序
-      final sorted = List.from(allMessages)
-        ..sort((a, b) => a.createTime.compareTo(b.createTime));
-      firstChatTime = DateTime.fromMillisecondsSinceEpoch(
-        sorted.first.createTime * 1000,
-      );
-      lastChatTime = DateTime.fromMillisecondsSinceEpoch(
-        sorted.last.createTime * 1000,
-      );
-    }
-
-    // 6. 聊天活跃天数
-    final messageDates = await _databaseService.getSessionMessageDates(
-      friendUsername,
-      filterYear: filterYear,
-    );
-
-    // 7. 消息类型分析（只针对这个好友）
-    final messagesByDate = await _databaseService.getSessionMessagesByDate(
-      friendUsername,
-      filterYear: filterYear,
-    );
-
-    // 计算主动性（谁先发消息的天数）
-    int initiatedByMe = 0;
-    int initiatedByFriend = 0;
-    for (final data in messagesByDate.values) {
-      if (data['firstIsSend'] == true) {
-        initiatedByMe++;
-      } else {
-        initiatedByFriend++;
-      }
-    }
+    // 获取我的微信显示名称
+    final myDisplayName = await _getMyDisplayName(myName);
 
     return {
+      'myName': myDisplayName,
       'friendUsername': friendUsername,
-      'friendDisplayName': friendDisplayName,
-      'filterYear': filterYear,
-
-      // 基础数据
-      'totalMessages': messageStats['total'],
-      'sentMessages': messageStats['sent'],
-      'receivedMessages': messageStats['received'],
-      'activeDays': messageDates.length,
-      'firstChatTime': firstChatTime?.toIso8601String(),
-      'lastChatTime': lastChatTime?.toIso8601String(),
-
-      // 主动性
-      'initiatedByMe': initiatedByMe,
-      'initiatedByFriend': initiatedByFriend,
-
-      // 详细分析
-      'intimacyCalendar': intimacyCalendar.toJson(),
-      'conversationBalance': conversationBalance.toJson(),
-      'longestStreak': longestStreak,
+      'friendName': friendName,
+      'year': year,
+      'firstChat': firstChat,
+      'thisYearFirstChat': thisYearFirstChat,
     };
   }
 
-  /// 获取推荐的好友列表（聊天最多的前N位）
-  Future<List<Map<String, dynamic>>> getRecommendedFriends({
-    int limit = 20,
-    int? filterYear,
-  }) async {
-    final sessions = await _databaseService.getSessions();
-    final privateSessions = sessions
-        .where((s) => !s.isGroup && !_isSystemAccount(s.username))
-        .toList();
+  /// 获取我的微信显示名称
+  Future<String> _getMyDisplayName(String myWxid) async {
+    try {
+      // 从 contact 数据库获取所有联系人，找到自己的记录
+      final contacts = await _databaseService.getAllContacts();
 
-    final friendStats = <Map<String, dynamic>>[];
-    final displayNames = await _databaseService.getDisplayNames(
-      privateSessions.map((s) => s.username).toList(),
-    );
+      // 尝试精确匹配
+      final myContactRecord = contacts.firstWhere(
+        (c) => c.contact.username == myWxid,
+        orElse: () => contacts.firstWhere(
+          (c) => c.contact.username.contains(myWxid) || myWxid.contains(c.contact.username),
+          orElse: () => ContactRecord(
+            contact: Contact(
+              id: 0,
+              username: myWxid,
+              localType: 0,
+              alias: '',
+              encryptUsername: '',
+              flag: 0,
+              deleteFlag: 0,
+              verifyFlag: 0,
+              remark: '',
+              remarkQuanPin: '',
+              remarkPinYinInitial: '',
+              nickName: '',
+              pinYinInitial: '',
+              quanPin: '',
+              bigHeadUrl: '',
+              smallHeadUrl: '',
+              headImgMd5: '',
+              chatRoomNotify: 0,
+              isInChatRoom: 0,
+              description: '',
+              extraBuffer: [],
+              chatRoomType: 0,
+            ),
+            source: ContactRecognitionSource.friend,
+            origin: ContactDataOrigin.unknown,
+          ),
+        ),
+      );
 
-    for (final session in privateSessions) {
-      try {
-        final stats = await _databaseService.getSessionMessageStats(
-          session.username,
-          filterYear: filterYear,
-        );
-        final total = stats['total'] as int;
-
-        if (total > 0) {
-          friendStats.add({
-            'username': session.username,
-            'displayName': displayNames[session.username] ?? session.username,
-            'messageCount': total,
-            'avatarUrl': null, // 可以后续添加头像支持
-          });
-        }
-      } catch (e) {
-        // 跳过错误
-      }
+      // 使用 Contact 的 displayName getter（已处理 remark/nickName/alias 优先级）
+      return myContactRecord.contact.displayName;
+    } catch (e) {
+      print('获取我的显示名称失败: $e');
+      return myWxid;
     }
-
-    // 按消息数排序
-    friendStats.sort(
-      (a, b) => (b['messageCount'] as int).compareTo(a['messageCount'] as int),
-    );
-
-    return friendStats.take(limit).toList();
   }
 
-  bool _isSystemAccount(String username) {
-    final lower = username.toLowerCase();
-    if (lower.contains('filehelper') ||
-        lower.contains('fmessage') ||
-        lower.contains('medianote') ||
-        lower.contains('newsapp') ||
-        lower.contains('weixin') ||
-        lower.contains('gh_') ||
-        lower.contains('brandsession') ||
-        lower.contains('brandservice') ||
-        lower.contains('placeholder') ||
-        lower.contains('holder') ||
-        lower.contains('_foldgroup') ||
-        lower.contains('qqmail')) {
-      return true;
+  /// 获取第一次聊天信息
+  Future<Map<String, dynamic>?> _getFirstChatInfo(String username) async {
+    try {
+      // 使用 getMessagesByDate 从1970年1月1日到现在，获取所有历史消息
+      final now = DateTime.now();
+      final startTimestamp = 0; // 1970年1月1日
+      final endTimestamp = now.millisecondsSinceEpoch ~/ 1000; // 当前时间
+
+      print('查询所有历史消息范围: $startTimestamp - $endTimestamp (${DateTime.fromMillisecondsSinceEpoch(startTimestamp*1000)} - ${DateTime.fromMillisecondsSinceEpoch(endTimestamp*1000)})');
+      final allMessages = await _databaseService.getMessagesByDate(
+        username,
+        startTimestamp,
+        endTimestamp,
+      );
+
+      print('所有历史消息数量: ${allMessages.length}');
+      if (allMessages.isEmpty) {
+        print('没有找到历史消息');
+        return null;
+      }
+
+      // getMessagesByDate 返回的是降序（最新在前），需要按升序排序
+      allMessages.sort((a, b) => a.createTime.compareTo(b.createTime));
+
+      // 调试：打印前5条消息的时间
+      print('排序后的前5条消息时间:');
+      for (int i = 0; i < (allMessages.length > 5 ? 5 : allMessages.length); i++) {
+        final msg = allMessages[i];
+        final timeMs = msg.createTime * 1000;
+        print('  [$i] ${msg.createTime} -> ${DateTime.fromMillisecondsSinceEpoch(timeMs)}');
+      }
+
+      final firstMessage = allMessages.first;
+      // createTime 是秒级时间戳，需要转换为毫秒
+      final createTimeMs = firstMessage.createTime * 1000;
+      print('找到的第一条消息时间: ${firstMessage.createTime} -> ${DateTime.fromMillisecondsSinceEpoch(createTimeMs)}');
+
+      return {
+        'createTime': createTimeMs,  // 毫秒时间戳
+        'createTimeStr': _formatDateTime(createTimeMs), // 格式化的时间字符串
+        'content': firstMessage.messageContent,
+        'isSentByMe': firstMessage.isSend == 1,
+        'senderUsername': firstMessage.senderUsername,
+      };
+    } catch (e) {
+      print('获取第一次聊天信息失败: $e');
+      return null;
     }
-    if (RegExp(r'^\d+$').hasMatch(username)) {
-      return true;
+  }
+
+  /// 获取今年第一次聊天信息（包括前三句对话）
+  Future<Map<String, dynamic>?> _getThisYearFirstChatInfo(
+    String username,
+    String friendName,
+    int year,
+  ) async {
+    try {
+      // 定义今年的时间范围
+      final startOfYear = DateTime(year, 1, 1);
+      final endOfYear = DateTime(year, 12, 31, 23, 59, 59);
+
+      final startTimestamp = startOfYear.millisecondsSinceEpoch ~/ 1000;
+      final endTimestamp = endOfYear.millisecondsSinceEpoch ~/ 1000;
+
+      // 直接按日期范围查询今年的消息
+      print('查询今年消息范围: $startTimestamp - $endTimestamp (${DateTime.fromMillisecondsSinceEpoch(startTimestamp*1000)} - ${DateTime.fromMillisecondsSinceEpoch(endTimestamp*1000)})');
+      final thisYearMessages = await _databaseService.getMessagesByDate(
+        username,
+        startTimestamp,
+        endTimestamp,
+      );
+
+      print('今年消息数量: ${thisYearMessages.length}');
+      if (thisYearMessages.isEmpty) {
+        print('今年没有找到消息');
+        return null;
+      }
+
+      // 确保按时间升序排序，第一条就是今年最早的
+      thisYearMessages.sort((a, b) => a.createTime.compareTo(b.createTime));
+      final firstMessage = thisYearMessages.first;
+      final createTimeMs = firstMessage.createTime * 1000; // 转换为毫秒
+      print('找到的今年第一条消息时间: ${firstMessage.createTime} -> ${DateTime.fromMillisecondsSinceEpoch(createTimeMs)}');
+
+      // 获取前三条消息（包含时间）
+      final firstThreeMessages = thisYearMessages.take(3).map((msg) {
+        final msgTimeMs = msg.createTime * 1000;
+        return {
+          'content': msg.messageContent,
+          'isSentByMe': msg.isSend == 1,
+          'createTime': msg.createTime,
+          'createTimeStr': _formatDateTime(msgTimeMs),
+        };
+      }).toList();
+
+      return {
+        'createTime': createTimeMs,
+        'createTimeStr': _formatDateTime(createTimeMs),
+        'content': firstMessage.messageContent,
+        'isSentByMe': firstMessage.isSend == 1,
+        'friendName': friendName,
+        'firstThreeMessages': firstThreeMessages,
+      };
+    } catch (e) {
+      print('获取今年第一次聊天信息失败: $e');
+      return null;
     }
-    return false;
+  }
+
+  /// 格式化时间（显示日期和时间）
+  String _formatDateTime(int millisecondsSinceEpoch) {
+    final dt = DateTime.fromMillisecondsSinceEpoch(millisecondsSinceEpoch);
+    final month = dt.month.toString().padLeft(2, '0');
+    final day = dt.day.toString().padLeft(2, '0');
+    final hour = dt.hour.toString().padLeft(2, '0');
+    final minute = dt.minute.toString().padLeft(2, '0');
+    return '$month/$day $hour:$minute';
   }
 }
