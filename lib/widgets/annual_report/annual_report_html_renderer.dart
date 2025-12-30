@@ -524,8 +524,8 @@ section.page.visible .content-wrapper {
     return '''
 <div class="label-text">巅峰时刻</div>
 <div class="hero-title">${peak.formattedDate}</div>
-<div class="big-stat">一天里发了 <div class="stat-num">${fmt.format(peak.messageCount)}</div><div class="stat-unit">条消息</div></div>
-<div class="hero-desc">那是热烈的一天，你和 <span class="hl">${_escapeHtml(peak.topFriendDisplayName ?? '好友')}</span> 聊得停不下来。</div>
+<div class="big-stat">一天里你一共发了 <div class="stat-num">${fmt.format(peak.messageCount)}</div><div class="stat-unit">条消息</div></div>
+<div class="hero-desc">那是热烈的一天，你和 <span class="hl">${_escapeHtml(peak.topFriendDisplayName ?? '好友')}</span> 聊了 ${fmt.format(peak.topFriendMessageCount)} 条，聊得停不下来。</div>
 ''';
   }
 
