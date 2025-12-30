@@ -483,10 +483,7 @@ section.page.visible .content-wrapper {
 
     return '''
 <div class="label-text">月度好友</div>
-<div class="hero-title">月度好友</div>
-<div class="hero-desc" style="font-size: 22px; color: var(--text-main); margin-top: 8px;">
-  ${_escapeHtml(yearText)}月度好友
-</div>
+<div class="hero-title">${_escapeHtml(yearText)}月度好友</div>
 <div class="hero-desc">根据12个月的聊天习惯</div>
 
 <div class="monthly-orbit">
