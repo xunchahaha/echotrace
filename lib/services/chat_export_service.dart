@@ -1222,6 +1222,7 @@ class ChatExportService {
     List<Message> messages, {
     String? filePath,
     void Function(int current, int total, String stage)? onProgress,
+    bool exportAvatars = true,
     MediaExportOptions? mediaOptions,
   }) async {
     try {
@@ -1257,15 +1258,18 @@ class ChatExportService {
           : <String, String>{};
       final myDisplayName = await _buildMyDisplayName(rawMyWxid, myContactInfo);
 
-      onProgress?.call(0, totalMessages, '构建头像索引...');
-      final avatars = await _buildAvatarIndex(
-        session: session,
-        messages: messages,
-        contactInfo: contactInfo,
-        senderDisplayNames: senderDisplayNames,
-        rawMyWxid: rawMyWxid,
-        myDisplayName: myDisplayName,
-      );
+      var avatars = <String, Map<String, String>>{};
+      if (exportAvatars) {
+        onProgress?.call(0, totalMessages, '构建头像索引...');
+        avatars = await _buildAvatarIndex(
+          session: session,
+          messages: messages,
+          contactInfo: contactInfo,
+          senderDisplayNames: senderDisplayNames,
+          rawMyWxid: rawMyWxid,
+          myDisplayName: myDisplayName,
+        );
+      }
 
       onProgress?.call(0, totalMessages, '处理消息数据...');
       final mediaHelper = (mediaOptions != null && mediaOptions.enabled)
@@ -1324,9 +1328,11 @@ class ChatExportService {
             'isSend': msg.isSend,
             'senderUsername': senderWxid.isEmpty ? null : senderWxid,
             'senderDisplayName': senderName,
-            'senderAvatarKey': senderWxid.isEmpty ? null : senderWxid,
             'source': msg.source,
           };
+          if (exportAvatars && senderWxid.isNotEmpty) {
+            item['senderAvatarKey'] = senderWxid;
+          }
 
           if (msg.localType == 47 && msg.emojiMd5 != null) {
             item['emojiMd5'] = msg.emojiMd5;
@@ -1361,7 +1367,7 @@ class ChatExportService {
           'messageCount': messages.length,
         },
         'messages': messageItems,
-        'avatars': avatars,
+        if (exportAvatars) 'avatars': avatars,
         if (groupMembers != null) 'groupMembers': groupMembers,
         'exportTime': DateTime.now().toIso8601String(),
       };
@@ -1409,6 +1415,7 @@ class ChatExportService {
     List<Message> messages, {
     String? filePath,
     void Function(int current, int total, String stage)? onProgress,
+    bool exportAvatars = true,
     MediaExportOptions? mediaOptions,
   }) async {
     try {
@@ -1446,15 +1453,18 @@ class ChatExportService {
           : <String, String>{};
       final myDisplayName = await _buildMyDisplayName(rawMyWxid, myContactInfo);
 
-      onProgress?.call(0, totalMessages, '构建头像索引...');
-      final avatars = await _buildAvatarIndex(
-        session: session,
-        messages: messages,
-        contactInfo: contactInfo,
-        senderDisplayNames: senderDisplayNames,
-        rawMyWxid: rawMyWxid,
-        myDisplayName: myDisplayName,
-      );
+      var avatars = <String, Map<String, String>>{};
+      if (exportAvatars) {
+        onProgress?.call(0, totalMessages, '构建头像索引...');
+        avatars = await _buildAvatarIndex(
+          session: session,
+          messages: messages,
+          contactInfo: contactInfo,
+          senderDisplayNames: senderDisplayNames,
+          rawMyWxid: rawMyWxid,
+          myDisplayName: myDisplayName,
+        );
+      }
 
       final mediaHelper = (mediaOptions != null && mediaOptions.enabled)
           ? _MediaExportHelper(_databaseService, mediaOptions)
@@ -1491,6 +1501,7 @@ class ChatExportService {
           myWxid: myWxid,
           contactInfo: contactInfo,
           myDisplayName: myDisplayName,
+          exportAvatars: exportAvatars,
           mediaItem: mediaItem,
         );
         messagesData.add(item);
@@ -1541,6 +1552,7 @@ class ChatExportService {
     List<Message> messages, {
     String? filePath,
     void Function(int current, int total, String stage)? onProgress,
+    bool exportAvatars = true,
     MediaExportOptions? mediaOptions,
   }) async {
     final Workbook workbook = Workbook();
@@ -1623,14 +1635,16 @@ class ChatExportService {
         rawAccountWxid,
         currentAccountInfo,
       );
-      final avatars = await _buildAvatarIndex(
-        session: session,
-        messages: messages,
-        contactInfo: contactInfo,
-        senderDisplayNames: senderDisplayNames,
-        rawMyWxid: rawAccountWxid,
-        myDisplayName: myDisplayName,
-      );
+      final avatars = exportAvatars
+          ? await _buildAvatarIndex(
+              session: session,
+              messages: messages,
+              contactInfo: contactInfo,
+              senderDisplayNames: senderDisplayNames,
+              rawMyWxid: rawAccountWxid,
+              myDisplayName: myDisplayName,
+            )
+          : <String, Map<String, String>>{};
       final sanitizedAccountWxid = currentAccountWxid;
       if (sanitizedAccountWxid.isNotEmpty) {
         senderContactInfos[sanitizedAccountWxid] = currentAccountInfo;
@@ -1944,6 +1958,7 @@ class ChatExportService {
     int begintimestamp = 0,
     int endTimestamp = 0,
     int totalMessagesHint = 0,
+    bool exportAvatars = true,
     MediaExportOptions? mediaOptions,
   }) async {
     IOSink? sink;
@@ -2035,6 +2050,7 @@ class ChatExportService {
               rawMyWxid: rawMyWxid,
               myDisplayName: myDisplayName,
               myWxid: myWxid,
+              exportAvatars: exportAvatars,
               mediaItem: mediaItem,
             );
             final encoded = jsonEncode(item);
@@ -2053,21 +2069,26 @@ class ChatExportService {
         endTimestamp: endTimestamp,
       );
 
-      onProgress?.call(totalMessages, totalMessages, '构建头像索引...');
-      final avatars = await _buildAvatarIndexFromUsernames(
-        session: session,
-        senderUsernames: senderUsernames,
-        contactInfo: contactInfo,
-        senderDisplayNames: senderDisplayNames,
-        rawMyWxid: rawMyWxid,
-        myDisplayName: myDisplayName,
-      );
+      var avatars = <String, Map<String, String>>{};
+      if (exportAvatars) {
+        onProgress?.call(totalMessages, totalMessages, '构建头像索引...');
+        avatars = await _buildAvatarIndexFromUsernames(
+          session: session,
+          senderUsernames: senderUsernames,
+          contactInfo: contactInfo,
+          senderDisplayNames: senderDisplayNames,
+          rawMyWxid: rawMyWxid,
+          myDisplayName: myDisplayName,
+        );
+      }
       final groupMembers = session.isGroup
           ? await _getGroupMemberExportData(session.username)
           : null;
 
       sink.write('\n  ],\n');
-      sink.writeln('  "avatars": ${jsonEncode(avatars)},');
+      if (exportAvatars) {
+        sink.writeln('  "avatars": ${jsonEncode(avatars)},');
+      }
       if (groupMembers != null) {
         sink.writeln('  "groupMembers": ${jsonEncode(groupMembers)},');
       }
@@ -2097,6 +2118,7 @@ class ChatExportService {
     int begintimestamp = 0,
     int endTimestamp = 0,
     int totalMessagesHint = 0,
+    bool exportAvatars = true,
     MediaExportOptions? mediaOptions,
   }) async {
     IOSink? sink;
@@ -2178,6 +2200,7 @@ class ChatExportService {
               myWxid: myWxid,
               contactInfo: contactInfo,
               myDisplayName: myDisplayName,
+              exportAvatars: exportAvatars,
               mediaItem: mediaItem,
             );
             final encoded = jsonEncode(item);
@@ -2196,15 +2219,18 @@ class ChatExportService {
         endTimestamp: endTimestamp,
       );
 
-      onProgress?.call(totalMessages, totalMessages, '构建头像索引...');
-      final avatars = await _buildAvatarIndexFromUsernames(
-        session: session,
-        senderUsernames: senderUsernames,
-        contactInfo: contactInfo,
-        senderDisplayNames: senderDisplayNames,
-        rawMyWxid: rawMyWxid,
-        myDisplayName: myDisplayName,
-      );
+      var avatars = <String, Map<String, String>>{};
+      if (exportAvatars) {
+        onProgress?.call(totalMessages, totalMessages, '构建头像索引...');
+        avatars = await _buildAvatarIndexFromUsernames(
+          session: session,
+          senderUsernames: senderUsernames,
+          contactInfo: contactInfo,
+          senderDisplayNames: senderDisplayNames,
+          rawMyWxid: rawMyWxid,
+          myDisplayName: myDisplayName,
+        );
+      }
 
       sink.write('\n  ];\n');
       sink.write(_buildHtmlFooterStream(avatars));
@@ -2229,6 +2255,7 @@ class ChatExportService {
     int begintimestamp = 0,
     int endTimestamp = 0,
     int totalMessagesHint = 0,
+    bool exportAvatars = true,
     MediaExportOptions? mediaOptions,
   }) async {
     final Workbook workbook = Workbook();
@@ -2370,14 +2397,16 @@ class ChatExportService {
       );
       onProgress?.call(index, totalMessages, '处理消息数据...');
 
-      final avatars = await _buildAvatarIndexFromUsernames(
-        session: session,
-        senderUsernames: senderUsernames,
-        contactInfo: contactInfo,
-        senderDisplayNames: senderDisplayNames,
-        rawMyWxid: rawAccountWxid,
-        myDisplayName: myDisplayName,
-      );
+      final avatars = exportAvatars
+          ? await _buildAvatarIndexFromUsernames(
+              session: session,
+              senderUsernames: senderUsernames,
+              contactInfo: contactInfo,
+              senderDisplayNames: senderDisplayNames,
+              rawMyWxid: rawAccountWxid,
+              myDisplayName: myDisplayName,
+            )
+          : <String, Map<String, String>>{};
 
       sheet.getRangeByIndex(1, 1).columnWidth = 8;
       sheet.getRangeByIndex(1, 2).columnWidth = 20;
@@ -2988,6 +3017,7 @@ class ChatExportService {
     required String rawMyWxid,
     required String myDisplayName,
     required String myWxid,
+    required bool exportAvatars,
     _MediaExportItem? mediaItem,
   }) {
     final isSend = msg.isSend == 1;
@@ -3018,9 +3048,11 @@ class ChatExportService {
       'isSend': msg.isSend,
       'senderUsername': senderWxid.isEmpty ? null : senderWxid,
       'senderDisplayName': senderName,
-      'senderAvatarKey': senderWxid.isEmpty ? null : senderWxid,
       'source': msg.source,
     };
+    if (exportAvatars && senderWxid.isNotEmpty) {
+      item['senderAvatarKey'] = senderWxid;
+    }
 
     if (msg.localType == 47 && msg.emojiMd5 != null) {
       item['emojiMd5'] = msg.emojiMd5;
@@ -3039,6 +3071,7 @@ class ChatExportService {
     required String myWxid,
     required Map<String, String> contactInfo,
     required String myDisplayName,
+    required bool exportAvatars,
     _MediaExportItem? mediaItem,
   }) {
     final msgDate = DateTime.fromMillisecondsSinceEpoch(
@@ -3077,7 +3110,7 @@ class ChatExportService {
       'content': _formatHtmlContent(msg, mediaItem),
       'senderName': senderName,
       'timestamp': msg.createTime,
-      'avatarKey': avatarKey.isEmpty ? null : avatarKey,
+      'avatarKey': exportAvatars && avatarKey.isNotEmpty ? avatarKey : null,
     };
   }
 
