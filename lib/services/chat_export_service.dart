@@ -4606,8 +4606,6 @@ class ChatExportService {
             continue;
           }
 
-          final groupNickname =
-              _normalizeDisplayField(row['groupNickname'] as String?);
           final contactInfo = await _getContactInfoFromDb(
             contactDb,
             username,
@@ -4622,8 +4620,6 @@ class ChatExportService {
 
           results.add({
             'username': username,
-            'groupNickname':
-                _hasMeaningfulValue(groupNickname) ? groupNickname : null,
             'remark': _hasMeaningfulValue(remark) ? remark : null,
             'originalName': originalName,
           });
@@ -4851,13 +4847,7 @@ class ChatExportService {
       buffer.write('n.username AS username');
     }
 
-    if (displayColumn != null) {
-      if (usernameColumn != null) {
-        buffer.write(', "$displayColumn" AS groupNickname');
-      } else {
-        buffer.write(', m."$displayColumn" AS groupNickname');
-      }
-    }
+    // 不再导出群昵称，仅保留原始名称与备注信息。
 
     if (usernameColumn != null) {
       buffer.write(' FROM "$memberTable"');

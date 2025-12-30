@@ -47,7 +47,6 @@ class _ChatExportPageState extends State<ChatExportPage>
   bool _exportImages = true;
   bool _exportVoices = true;
   bool _exportEmojis = true;
-  bool _isOpeningFolder = false;
   late final TextEditingController _searchController;
   late final FocusNode _searchFocusNode;
 
@@ -1520,6 +1519,7 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
   _ExportStatus _status = _ExportStatus.idle;
   String? _errorMessage;
   late int _totalSessions;
+  bool _isOpeningFolder = false;
 
   // 使用 ValueNotifier 来局部更新条数，避免重建整个 widget 导致进度条卡顿
   final ValueNotifier<int> _exportedCountNotifier = ValueNotifier<int>(0);
@@ -1786,6 +1786,31 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
     final path = widget.exportFolder;
     final uri = Uri.directory(path);
     try {
+      if (Platform.isWindows) {
+        unawaited(Process.start(
+          'explorer',
+          [path],
+          mode: ProcessStartMode.detached,
+        ));
+        return;
+      }
+      if (Platform.isMacOS) {
+        unawaited(Process.start(
+          'open',
+          [path],
+          mode: ProcessStartMode.detached,
+        ));
+        return;
+      }
+      if (Platform.isLinux) {
+        unawaited(Process.start(
+          'xdg-open',
+          [path],
+          mode: ProcessStartMode.detached,
+        ));
+        return;
+      }
+
       final launched = await launchUrl(
         uri,
         mode: LaunchMode.externalApplication,
@@ -1794,27 +1819,12 @@ class _ExportProgressDialogState extends State<_ExportProgressDialog> {
         throw '无法打开文件夹';
       }
     } catch (e) {
-      // 平台特定的回退处理
+      // 回退处理：再尝试一次 URL 打开，避免进程启动失败导致无响应
       try {
-        if (Platform.isWindows) {
-          await Process.start(
-            'explorer',
-            [path],
-            mode: ProcessStartMode.detached,
-          );
-        } else if (Platform.isMacOS) {
-          await Process.start(
-            'open',
-            [path],
-            mode: ProcessStartMode.detached,
-          );
-        } else if (Platform.isLinux) {
-          await Process.start(
-            'xdg-open',
-            [path],
-            mode: ProcessStartMode.detached,
-          );
-        }
+        await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        ).timeout(const Duration(seconds: 3));
       } catch (_) {}
     } finally {
       _isOpeningFolder = false;
