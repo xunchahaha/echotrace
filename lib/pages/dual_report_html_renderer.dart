@@ -141,7 +141,6 @@ section.page {
   max-width: 1000px;
   width: 100%;
   margin: 0 auto;
-  text-align: left;
   opacity: 1;
   transform: translateY(0);
 }
@@ -325,11 +324,7 @@ section.page.visible .content-wrapper {
     final escapedFriendName = _escapeHtml(friendName);
     return '''
 <div class="label-text">ECHO TRACE · DUAL REPORT</div>
-<div class="hero-names">
-  <span class="name">$escapedMyName</span>
-  <span class="ampersand">&</span>
-  <span class="name">$escapedFriendName</span>
-</div>
+<div class="hero-names">$escapedMyName <span class="ampersand">&</span> $escapedFriendName</div>
 <hr class="divider">
 <div class="hero-desc">每一段对话<br>都是独一无二的相遇<br><br>让我们一起回顾<br>那些珍贵的聊天时光</div>
 ''';
